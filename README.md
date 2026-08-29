@@ -157,51 +157,57 @@ you prefer a stock Arch install.
   and `PermitEmptyPasswords no`; installed systems inherit it.
 * Secure Boot is not supported by archiso out of the box — disable it in firmware or enrol keys.
 
-## Department package repo
+## CyberOS packages
 
-CyberOS builds its own pacman repository, `[cyberos]`. `build.sh` builds
-everything in `aur/packages.txt` — cloned from the AUR, or from a local
-`aur/<name>/PKGBUILD` if one exists — into `repo/`, and the ISO installs from
-there. Upstream AUR packages and department add-ons share one pipeline.
+CyberOS maintains and releases its **own signed packages** through the
+`[cyberos]` repository. Students install them with pacman, and updates arrive
+without a new ISO.
 
-### Adding a department add-on
+```
+packages/      software the department maintains and releases  ← the product
+aur/           upstream AUR packages built only as ISO inputs (vscode,
+               onlyoffice, the SDDM theme) — not something we redistribute
+```
+
+### Making a package
 
 ```bash
-cp -r aur/cyberos-addon-template aur/cyberos-netlab
-$EDITOR aur/cyberos-netlab/PKGBUILD      # payload, or just depends=() for a metapackage
-echo cyberos-netlab >> aur/packages.txt
-cd aur/cyberos-netlab && makepkg -sf     # build it alone, no full ISO build
+cp -r packages/template packages/cyberos-netlab
+$EDITOR packages/cyberos-netlab/PKGBUILD
+cd packages/cyberos-netlab && makepkg -sf     # build it alone
 ```
 
 A course toolset is usually a metapackage — no source, just
 `depends=('nmap' 'wireshark-qt' 'python-scapy')` — so one install pulls a whole
-module's tools.
+module's tools. `build.sh` picks up everything in `packages/` automatically and
+puts it in the ISO's repo.
 
-### Publishing so installed machines can use it
-
-Today `[cyberos]` is `Server = file://…`, which only exists on the build host.
-Installed machines therefore cannot `pacman -S` department packages, and updates
-reach them only via a new ISO. To fix that, serve the repo:
+### Releasing
 
 ```bash
-./tools/publish-repo.sh --key <KEYID>    # → dist/cyberos-repo/x86_64/
+./tools/release.sh --key <KEYID>     # → dist/cyberos-repo/x86_64/
 ```
 
-Upload that directory, then uncomment the `[cyberos]` block in
-`/etc/pacman.conf` (it ships commented, with the URL to fill in).
+Upload that directory, then point `Server` at it in the `[cyberos]` block of
+`/etc/pacman.conf` (it ships commented, ready to fill in).
 
-**Sign it.** An unsigned repo over the network means whoever answers that
-hostname installs packages as root on every lab machine. Make a department key
-once, keep the private half off the lab machines, and ship the public half:
+**Packages are signed, and clients verify.** The repo installs software as root,
+so an unsigned one lets whoever answers that hostname own every lab machine —
+`release.sh` refuses to run without a key unless you pass `--unsigned`, and the
+shipped `SigLevel` is `Required DatabaseRequired`.
+
+Make the department key once and keep the private half off lab machines:
 
 ```bash
-gpg --full-generate-key                        # "CyberOS Repository <…>"
-gpg --list-secret-keys --keyid-format=long     # note the key id
+gpg --full-generate-key                       # "CyberOS Repository <…>"
+gpg --list-secret-keys --keyid-format=long    # note the key id
+gpg --export --armor <KEYID> > profile/airootfs/usr/share/pacman/keyrings/cyberos.gpg
 ```
 
-The script prints the exact `pacman.conf` snippet and the `pacman-key` commands
-for the key you used. Current repo size is ~864 MB, which rules out GitHub Pages
-(1 GB soft limit).
+With that file in place the ISO trusts the key automatically — `pacman-key
+--populate cyberos` runs on the live session and in the installer — so every
+CyberOS package is verified before it installs. Builds still work before the key
+exists; the trust step is conditional.
 
 ## Contributing
 

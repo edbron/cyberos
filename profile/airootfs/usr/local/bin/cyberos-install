@@ -281,6 +281,11 @@ systemctl disable ModemManager >/dev/null 2>&1 || true
 # pacman keyring for future online updates
 pacman-key --init >/dev/null 2>&1
 pacman-key --populate archlinux >/dev/null 2>&1
+# Trust the department keyring if the ISO shipped one, so the installed
+# machine verifies CyberOS packages from the [cyberos] repo.
+if [ -f /usr/share/pacman/keyrings/cyberos.gpg ]; then
+  pacman-key --populate cyberos >/dev/null 2>&1 || true
+fi
 
 mkinitcpio -P
 

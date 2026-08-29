@@ -10,6 +10,10 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/bin/pacman-key --init
 ExecStart=/usr/bin/pacman-key --populate
+# Trust the department keyring when one is shipped, so pacman verifies
+# CyberOS packages from the [cyberos] repo. Conditional: the build works
+# before a department key exists.
+ExecStart=/bin/sh -c 'test -f /usr/share/pacman/keyrings/cyberos.gpg && pacman-key --populate cyberos || true'
 
 [Install]
 WantedBy=multi-user.target

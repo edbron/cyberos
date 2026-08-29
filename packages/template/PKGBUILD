@@ -1,0 +1,32 @@
+# Template for a first-party CyberOS package.
+#
+# Copy this directory to packages/<name>/ and edit it. Everything under
+# packages/ is software the department maintains and releases itself — it is
+# built, signed with the department key, and published in the [cyberos] repo.
+#
+# This is separate from aur/, which only holds upstream AUR packages we build
+# as inputs to the ISO (vscode, onlyoffice, the SDDM theme). We do not
+# redistribute those; packages/ is what CyberOS actually releases.
+#
+# Good uses: lab exercise bundles, course toolsets (a metapackage that just
+# depends on what a module needs), department themes, marking scripts.
+#
+# Build one on its own:
+#     cd packages/<name> && makepkg -sf
+pkgname=cyberos-package-template
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Template for a CyberOS department add-on"
+arch=('any')
+url="https://github.com/edbron/cyberos"
+license=('MIT')
+# A metapackage needs no source at all — just list what it pulls in:
+#   depends=('nmap' 'wireshark-qt' 'python-scapy')
+depends=()
+source=('payload-example.txt')
+sha256sums=('SKIP')
+
+package() {
+  install -Dm644 "$srcdir/payload-example.txt" \
+    "$pkgdir/usr/share/doc/$pkgname/payload-example.txt"
+}

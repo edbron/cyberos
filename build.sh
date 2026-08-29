@@ -40,6 +40,17 @@ if [[ $SKIP_AUR -eq 0 ]]; then
     (cd "$d" && makepkg -sf --noconfirm --needed)
     cp -f "$d"/*.pkg.tar.zst "$REPO/"
   done < "$ROOT/aur/packages.txt"
+  # CyberOS's own packages. Unlike aur/ (upstream inputs we merely build), these
+  # are what the department maintains and releases; they go in the same repo so
+  # the ISO can install them and tools/release.sh can publish them.
+  for d in "$ROOT"/packages/*/; do
+    name=$(basename "$d")
+    [[ -f $d/PKGBUILD && $name != template ]] || continue
+    msg "CyberOS package: $name"
+    (cd "$d" && makepkg -sf --noconfirm --needed)
+    cp -f "$d"/*.pkg.tar.zst "$REPO/"
+  done
+
   msg "Creating local repo"
   rm -f "$REPO"/cyberos.db* "$REPO"/cyberos.files*
   repo-add -q "$REPO/cyberos.db.tar.gz" "$REPO"/*.pkg.tar.zst
