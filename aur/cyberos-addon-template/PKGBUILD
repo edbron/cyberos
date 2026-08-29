@@ -1,0 +1,29 @@
+# Template for a CyberOS department add-on.
+#
+# Copy this directory to aur/<your-addon>/, edit it, then add <your-addon> to
+# aur/packages.txt. build.sh builds anything with a local PKGBUILD from that
+# directory instead of cloning it from the AUR, so department packages and
+# upstream AUR packages share one pipeline and land in the same [cyberos] repo.
+#
+# Good uses: lab exercise bundles, course toolsets (a metapackage that just
+# depends on what a module needs), department themes, marking scripts.
+#
+# Build one on its own without a full ISO build:
+#     cd aur/<your-addon> && makepkg -sf
+pkgname=cyberos-addon-template
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Template for a CyberOS department add-on"
+arch=('any')
+url="https://github.com/edbron/cyberos"
+license=('MIT')
+# A metapackage needs no source at all — just list what it pulls in:
+#   depends=('nmap' 'wireshark-qt' 'python-scapy')
+depends=()
+source=('addon-example.txt')
+sha256sums=('SKIP')
+
+package() {
+  install -Dm644 "$srcdir/addon-example.txt" \
+    "$pkgdir/usr/share/doc/$pkgname/addon-example.txt"
+}

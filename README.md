@@ -157,6 +157,52 @@ you prefer a stock Arch install.
   and `PermitEmptyPasswords no`; installed systems inherit it.
 * Secure Boot is not supported by archiso out of the box — disable it in firmware or enrol keys.
 
+## Department package repo
+
+CyberOS builds its own pacman repository, `[cyberos]`. `build.sh` builds
+everything in `aur/packages.txt` — cloned from the AUR, or from a local
+`aur/<name>/PKGBUILD` if one exists — into `repo/`, and the ISO installs from
+there. Upstream AUR packages and department add-ons share one pipeline.
+
+### Adding a department add-on
+
+```bash
+cp -r aur/cyberos-addon-template aur/cyberos-netlab
+$EDITOR aur/cyberos-netlab/PKGBUILD      # payload, or just depends=() for a metapackage
+echo cyberos-netlab >> aur/packages.txt
+cd aur/cyberos-netlab && makepkg -sf     # build it alone, no full ISO build
+```
+
+A course toolset is usually a metapackage — no source, just
+`depends=('nmap' 'wireshark-qt' 'python-scapy')` — so one install pulls a whole
+module's tools.
+
+### Publishing so installed machines can use it
+
+Today `[cyberos]` is `Server = file://…`, which only exists on the build host.
+Installed machines therefore cannot `pacman -S` department packages, and updates
+reach them only via a new ISO. To fix that, serve the repo:
+
+```bash
+./tools/publish-repo.sh --key <KEYID>    # → dist/cyberos-repo/x86_64/
+```
+
+Upload that directory, then uncomment the `[cyberos]` block in
+`/etc/pacman.conf` (it ships commented, with the URL to fill in).
+
+**Sign it.** An unsigned repo over the network means whoever answers that
+hostname installs packages as root on every lab machine. Make a department key
+once, keep the private half off the lab machines, and ship the public half:
+
+```bash
+gpg --full-generate-key                        # "CyberOS Repository <…>"
+gpg --list-secret-keys --keyid-format=long     # note the key id
+```
+
+The script prints the exact `pacman.conf` snippet and the `pacman-key` commands
+for the key you used. Current repo size is ~864 MB, which rules out GitHub Pages
+(1 GB soft limit).
+
 ## Contributing
 
 Branch off `main`, open a pull request, delete the branch after it merges.

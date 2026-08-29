@@ -1,0 +1,3 @@
+Replace this with the add-on's actual payload — lab handouts, scripts,
+config, or nothing at all if the package is a metapackage that only
+declares depends=().

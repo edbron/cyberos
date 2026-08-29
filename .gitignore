@@ -3,3 +3,7 @@ out/
 repo/
 profile/pacman.conf
 aur/*.deb
+dist/
+aur/*/src/
+aur/*/pkg/
+aur/*/*.pkg.tar.zst
