@@ -9,6 +9,9 @@ while IFS=: read -r name _ uid _ _ home _; do
 done < /etc/passwd
 # Firewall: default-deny incoming. Applied here rather than in the installer's
 # chroot, because ufw needs a running kernel to load its rules. docs/SPEC.md S1.
+# A machine running Metasploit, Docker and a packet capture on a campus network
+# needs default-deny. Nothing is opened by default: a student who needs a
+# listening service opens that port deliberately.
 if command -v ufw >/dev/null && [[ ! -e /etc/cyberos/firewall-applied ]]; then
   # No `ufw reset` here: on a fresh install there is nothing to reset, and reset
   # moves the shipped rule files aside -- ufw.service, starting concurrently on

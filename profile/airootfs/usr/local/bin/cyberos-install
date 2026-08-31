@@ -123,19 +123,6 @@ menuentry 'CyberOS (LTS kernel, safe graphics)' --class cyberos {
 ENTRIES
 }
 
-# firewall_rules -- the posture an installed CyberOS machine boots with.
-#
-# A machine running Metasploit, Docker and a packet capture on a campus network
-# needs default-deny. Nothing is opened by default: a student who needs a
-# listening service opens that port deliberately.
-firewall_rules() {
-  cat <<'RULES'
-ufw default deny incoming
-ufw default allow outgoing
-ufw --force enable
-RULES
-}
-
 # assert_no_sshd_in_live <airootfs-dir> -- regression guard.
 #
 # The live user has no password. archiso's own drop-in shipped PermitRootLogin

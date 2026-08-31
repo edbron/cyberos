@@ -32,6 +32,16 @@ own build metadata — not SemVer.
   a newline into `/etc/hosts` or raw escape sequences into the installer's
   own ANSI summary box.
 
+### Fixed
+
+- Removed the dead `firewall_rules()` helper from `cyberos-install`: it was
+  never called (the actual `ufw` enablement runs from `cyberos-firstboot`,
+  since `ufw` needs a running kernel that isn't available inside the
+  installer's chroot), and `tests/security.bats`'s firewall tests were
+  checking that unused function's string output instead of the real code
+  path, which meant they didn't actually catch a regression in what an
+  installed machine boots with. The tests now grep `cyberos-firstboot`.
+
 ### Added
 
 - `cyberos-arch-audit.timer`/`.service`: a weekly `arch-audit` run on

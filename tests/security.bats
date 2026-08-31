@@ -8,16 +8,18 @@ setup() {
 }
 
 @test "the firewall defaults to deny incoming" {
-  run firewall_rules
-  [[ "$output" == *"default deny incoming"* ]]
-  [[ "$output" == *"default allow outgoing"* ]]
-  [[ "$output" == *"enable"* ]]
+  # The real logic: ufw needs a running kernel to load its rules, so it is
+  # applied by cyberos-firstboot on the installed system's first real boot,
+  # not inside the installer's chroot -- see docs/SPEC.md S1.
+  firstboot="$ROOT/profile/airootfs/usr/local/bin/cyberos-firstboot"
+  grep -qE '^\s*ufw default deny incoming'  "$firstboot"
+  grep -qE '^\s*ufw default allow outgoing' "$firstboot"
+  grep -qE '^\s*ufw --force enable'         "$firstboot"
 }
 
 @test "the firewall does not open any port by default" {
-  run firewall_rules
-  ! [[ "$output" == *"allow 22"* ]]
-  ! [[ "$output" == *"allow ssh"* ]]
+  firstboot="$ROOT/profile/airootfs/usr/local/bin/cyberos-firstboot"
+  ! grep -qE '^\s*ufw allow (22|ssh)\b' "$firstboot"
 }
 
 @test "sshd is not enabled in the live image" {
@@ -55,8 +57,6 @@ setup() {
 
 @test "first boot never resets ufw (it deletes the shipped rules under a starting service)" {
   ! grep -qE '^\s*ufw (--force )?reset' "$ROOT/profile/airootfs/usr/local/bin/cyberos-firstboot"
-  run firewall_rules
-  ! [[ "$output" == *"reset"* ]]
 }
 
 @test "arch-audit runs on a weekly timer, enabled on install (docs/SPEC.md S4)" {
