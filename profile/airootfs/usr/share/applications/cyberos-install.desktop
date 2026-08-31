@@ -2,7 +2,7 @@
 Type=Application
 Name=Install CyberOS
 Comment=Install CyberOS to this computer's disk
-Exec=/usr/local/bin/cyberos-install-gui
+Exec=foot --app-id=cyberos-installer --title="Install CyberOS" sudo /usr/local/bin/cyberos-install
 Icon=drive-harddisk
 Terminal=false
 Categories=System;

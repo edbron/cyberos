@@ -7,39 +7,38 @@ PanelWindow {
     id: bar
     anchors { left: true; right: true; top: true }
     implicitHeight: Cyber.Theme.barHeight
-    margins { left: 5; right: 5; top: 2 }
-    exclusiveZone: implicitHeight + 4
+    margins { left: 0; right: 0; top: 0 }
+    exclusiveZone: implicitHeight
     color: "transparent"
 
     Rectangle {
         anchors.fill: parent
-        radius: height / 2
-        color: Qt.alpha(Cyber.Theme.bg, Cyber.Theme.barAlpha)
-        border.width: 1
-        border.color: Cyber.Theme.border
+        radius: 0
+        color: "transparent"
+        border.width: 0
 
         RowLayout {                       // left
             anchors { left: parent.left; verticalCenter: parent.verticalCenter; leftMargin: 10 }
-            spacing: 6
+            spacing: 8
             BarModule { icon: "\uf00a"; tooltip: "Applications"; onClicked: launcher.activeAsync = true }
             InstallButton {}
-            Workspaces {}
             Media {}
         }
-        WindowTitle { anchors.centerIn: parent }   // center
+
+        Workspaces {                      // center
+            anchors.centerIn: parent
+        }
+
         RowLayout {                       // right
             id: right
             anchors { right: parent.right; verticalCenter: parent.verticalCenter; rightMargin: 10 }
-            spacing: 6
-            WidgetHost {}
+            spacing: 8
             Tray {}
             Brightness {}
             BluetoothChip {}
             Audio {}
             Network {}
-            SysStats {}
             Battery {}
-            ClockChip {}
             BarModule { icon: "\uf011"; onClicked: powerMenu.activeAsync = true }
         }
     }

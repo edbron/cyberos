@@ -46,8 +46,8 @@ hl.env("ELECTRON_OZONE_PLATFORM_HINT", "auto")
 ---------------------------------------------------------------- look and feel
 hl.config({
   general = {
-    gaps_in = 6,
-    gaps_out = 10,
+    gaps_in = 2,
+    gaps_out = 2,
     border_size = 1,
     col = {
       active_border   = theme.accent,
@@ -58,7 +58,7 @@ hl.config({
   },
 
   decoration = {
-    rounding = 14,
+    rounding = 5,
     active_opacity = 0.92,
     inactive_opacity = 0.85,
     shadow = { enabled = true, range = 12, render_power = 3, color = "rgba(00000088)" },
@@ -165,6 +165,7 @@ hl.bind("XF86AudioPrev", hl.dsp.exec_cmd("playerctl previous"),   { locked = tru
 hl.window_rule({ name = "float-utilities",
   match = { class = "^(pavucontrol|blueman-manager|nm-connection-editor|org.gnome.Calculator)$" },
   float = true })
+hl.window_rule({ name = "float-installer", match = { class = "^(cyberos-installer)$" }, float = true, size = { 920, 640 }, center = true })
 hl.window_rule({ name = "float-pip",  match = { title = "^(Picture-in-Picture)$" }, float = true })
 hl.window_rule({ name = "float-vbox", match = { class = "^(VirtualBox Machine)$" }, float = true })
 hl.window_rule({ name = "suppress-maximize", match = { class = ".*" }, suppress_event = "maximize" })

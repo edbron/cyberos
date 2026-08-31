@@ -28,13 +28,29 @@ if [[ ${BASH_SOURCE[0]} == "${0}" ]]; then
   set -euo pipefail
 fi
 
+# ---------------------------------------------------------------- palette & styling
+C_GREEN="\033[38;2;0;202;78m"
+C_GOLD="\033[38;2;255;203;6m"
+C_CYAN="\033[38;2;0;190;255m"
+C_RED="\033[38;2;255;95;86m"
+C_GRAY="\033[38;2;130;130;130m"
+C_BOLD="\033[1m"
+C_DIM="\033[2m"
+C_RESET="\033[0m"
+
 DISK="" MODE="" ROOTP="" EFIP="" HOMEP="" FORMAT_EFI=0 FORMAT_HOME=0
 HOSTNAME_="cyberos" USER_="student" PASS="" ROOTPASS="" TZ_="UTC" FS="ext4" YES=0 SWAP_GB=4
 ENCRYPT=0 LUKSPASS="" LUKS_UUID=""
 
-usage() { sed -n '3,17p' "$0"; exit 1; }
-die()   { echo "ERROR: $*" >&2; exit 1; }
-msg()   { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
+usage() { sed -n '3,21p' "$0"; exit 1; }
+die()   {
+  printf "\n${C_RED}${C_BOLD}ERROR: %s${C_RESET}\n\n" "$*" >&2
+  if [[ -t 0 && ${CYBEROS_INSTALL_LIB_ONLY:-0} -eq 0 && ${YES:-0} -eq 0 ]]; then
+    read -rp "Press Enter to exit..." _ 2>/dev/null || true
+  fi
+  exit 1
+}
+msg()   { printf "\n${C_CYAN}${C_BOLD}==>${C_RESET} ${C_BOLD}%s${C_RESET}\n" "$*"; }
 
 # restore_kernel <flavour> <bootmnt> <dest>
 #
@@ -184,11 +200,72 @@ luks_cmdline() {
   fi
 }
 
+# ---------------------------------------------------------------- helpers
+get_live_medium() {
+  local src parent
+  src=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null | cut -d'[' -f1 || true)
+  if [[ -n $src ]]; then
+    parent=$(lsblk -no PKNAME "$src" 2>/dev/null | head -1 || true)
+    if [[ -n $parent ]]; then
+      echo "/dev/$parent"
+      return
+    fi
+    echo "$src"
+    return
+  fi
+}
+
+get_free_space_gib() {
+  local disk=$1 first last
+  if command -v sgdisk >/dev/null 2>&1; then
+    first=$(sgdisk -F "$disk" 2>/dev/null || true)
+    last=$(sgdisk -E "$disk" 2>/dev/null || true)
+    if [[ -n $first && -n $last && $last -ge $first ]]; then
+      echo $(( (last - first + 1) * 512 / 1024 / 1024 / 1024 ))
+      return
+    fi
+  fi
+  echo 0
+}
+
+detect_default_timezone() {
+  local tz=""
+  if [[ -f /etc/timezone ]]; then
+    tz=$(cat /etc/timezone)
+  elif [[ -h /etc/localtime ]]; then
+    tz=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')
+  elif command -v timedatectl >/dev/null 2>&1; then
+    tz=$(timedatectl show -p Timezone --value 2>/dev/null || true)
+  fi
+  if [[ -n $tz && -f "/usr/share/zoneinfo/$tz" ]]; then
+    echo "$tz"
+  else
+    echo "Africa/Accra"
+  fi
+}
+
+render_banner() {
+  clear 2>/dev/null || true
+  printf "${C_GREEN}${C_BOLD}"
+  cat <<'BANNER'
+   ____      _               ___  ____  
+  / ___|   _| |__   ___ _ __/ _ \/ ___| 
+ | |  | | | | '_ \ / _ \ '__| | | \___ \ 
+ | |__| |_| | |_) |  __/ |  | |_| |___) |
+  \____\__, |_.__/ \___|_|   \___/|____/ 
+       |___/                             
+BANNER
+  printf "${C_RESET}"
+  printf "${C_CYAN}  CyberOS Interactive Installer${C_RESET} ${C_DIM}— Arch Linux with Hyprland & Quickshell${C_RESET}\n"
+  printf "${C_GRAY}  ────────────────────────────────────────────────────────────────────────${C_RESET}\n\n"
+}
+
 # Everything below this point touches disks. Stop here when sourced for tests.
 if [[ -n ${CYBEROS_INSTALL_LIB_ONLY:-} ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+DRY_RUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --disk) DISK=$2; shift 2;;      --hostname) HOSTNAME_=$2; shift 2;;
@@ -198,170 +275,321 @@ while [[ $# -gt 0 ]]; do
     --efi) EFIP=$2; shift 2;;       --format-efi) FORMAT_EFI=1; shift;;
     --home) HOMEP=$2; shift 2;;     --format-home) FORMAT_HOME=1; shift;;
     --user) USER_=$2; shift 2;;     --password) PASS=$2; shift 2;;
-    # Read passwords from stdin instead of argv, which is world-readable
-    # in /proc: line 1 is the user password, an optional line 2 is root's.
-    # Line 1 user password, optional line 2 root's, optional line 3 the LUKS
-    # passphrase. All three over stdin so none of them reaches argv.
     --password-stdin) IFS= read -r PASS; IFS= read -r ROOTPASS || true; IFS= read -r LUKSPASS || true; shift;;
     --root-password) ROOTPASS=$2; shift 2;;
     --tz) TZ_=$2; shift 2;;         --fs) FS=$2; shift 2;;
     --swap) SWAP_GB=$2; shift 2;;   --yes|-y) YES=1; shift;;
     --encrypt) ENCRYPT=1; shift;;
+    --dry-run|--preview) DRY_RUN=1; shift;;
     -h|--help) usage;; *) die "unknown option $1";;
   esac
 done
 
-[[ $EUID -eq 0 ]]        || die "run as root (sudo cyberos-install)"
-[[ -d /run/archiso ]]    || die "this must be run from the CyberOS live ISO"
+if [[ $DRY_RUN -eq 0 ]]; then
+  [[ $EUID -eq 0 ]]        || die "run as root (sudo cyberos-install)"
+  [[ -d /run/archiso ]]    || die "this must be run from the CyberOS live ISO"
+fi
 [[ $FS == ext4 || $FS == btrfs ]] || die "--fs must be ext4 or btrfs"
 
 UEFI=0; [[ -d /sys/firmware/efi/efivars ]] && UEFI=1
-echo "Firmware mode: $([[ $UEFI -eq 1 ]] && echo UEFI || echo "legacy BIOS")"
 part() { if [[ $DISK == *nvme* || $DISK == *mmcblk* ]]; then echo "${DISK}p$1"; else echo "${DISK}$1"; fi; }
-show_disks() { echo; lsblk -dpno NAME,SIZE,MODEL,TRAN | grep -vE 'loop|sr0|/dev/zram'; echo; }
-# A filesystem written seconds ago may still be absent from the libblkid cache
-# that udev populated when the partition first appeared. Refresh it before mounting.
 settle_fs() { sync; udevadm settle; blkid "$1" >/dev/null 2>&1 || true; }
 show_parts() { echo; lsblk -pno NAME,SIZE,FSTYPE,PARTTYPENAME,LABEL,MOUNTPOINTS "$DISK"; echo; }
 
-# ---------------------------------------------------------------- disk + mode
-if [[ -z $DISK ]]; then
-  show_disks; read -rp "Target disk (e.g. /dev/sda): " DISK
-fi
-[[ -b $DISK ]] || die "$DISK is not a block device"
-if [[ -z $MODE ]]; then
-  if [[ $YES -eq 1 ]]; then MODE=erase; else
-    echo
-    echo "  1) Erase whole disk  — automatic layout (BIOS-boot + EFI + root). Everything on $DISK is lost."
-    echo "  2) Manual            — partition $DISK yourself (cfdisk), keep other OSes, pick partitions."
-    read -rp "Choose [1/2]: " m; case "$m" in 2) MODE=manual;; *) MODE=erase;; esac
-  fi
-fi
-
-if [[ $MODE == manual && $YES -eq 0 ]]; then
-  show_parts
-  read -rp "Open cfdisk to edit the partition table of $DISK? [Y/n]: " x
-  if [[ ${x:-Y} =~ ^[Yy] ]]; then
-    echo "Tips: GPT disks need a 1 MiB 'BIOS boot' partition for legacy-BIOS GRUB, and an EFI System"
-    echo "      partition (>=300 MiB, FAT32) for UEFI. Create a Linux filesystem partition for /."
-    read -rp "Press Enter to open cfdisk..." _
-    cfdisk "$DISK"; partprobe "$DISK" 2>/dev/null || true; udevadm settle
-  fi
-  show_parts
-  while [[ -z $ROOTP || ! -b $ROOTP ]]; do read -rp "Root (/) partition (will be FORMATTED as $FS): " ROOTP; done
-  if [[ $UEFI -eq 1 ]]; then
-    while [[ -z $EFIP || ! -b $EFIP ]]; do read -rp "EFI System partition (e.g. ${DISK}1): " EFIP; done
-    if blkid -o value -s TYPE "$EFIP" 2>/dev/null | grep -q vfat; then
-      read -rp "Format $EFIP? (say n to keep an existing Windows/Linux EFI partition) [y/N]: " x; [[ $x =~ ^[Yy] ]] && FORMAT_EFI=1
-    else FORMAT_EFI=1; fi
-  else
-    read -rp "EFI System partition (optional, Enter to skip): " EFIP
-    [[ -n $EFIP && ! -b $EFIP ]] && die "$EFIP is not a partition"
-    [[ -n $EFIP ]] && { read -rp "Format $EFIP? [y/N]: " x; [[ $x =~ ^[Yy] ]] && FORMAT_EFI=1; }
-  fi
-  read -rp "Separate /home partition (optional, Enter to skip): " HOMEP
-  if [[ -n $HOMEP ]]; then
-    [[ -b $HOMEP ]] || die "$HOMEP is not a partition"
-    read -rp "Format $HOMEP? (n keeps existing data) [y/N]: " x; [[ $x =~ ^[Yy] ]] && FORMAT_HOME=1
-  fi
-fi
-# ---------------------------------------------------------------- alongside
-# Install into existing free space next to another OS. Nothing already on the
-# disk is touched: no partition is deleted, moved or resized. The only write to
-# the partition table is one new entry in a gap that is already free.
-if [[ $MODE == alongside ]]; then
-  MIN_GIB=25
-  command -v sgdisk >/dev/null || die "sgdisk not found"
-  [[ $(blkid -o value -s PTTYPE "$DISK") == gpt ]] ||
-    die "installing alongside needs a GPT disk; $DISK is not GPT"
-
-  # sgdisk -F/-E give the first and last aligned sector of the LARGEST free block.
-  FREE_START=$(sgdisk -F "$DISK") || die "cannot read free space on $DISK"
-  FREE_END=$(sgdisk -E "$DISK")   || die "cannot read free space on $DISK"
-  FREE_GIB=$(( (FREE_END - FREE_START + 1) * 512 / 1024 / 1024 / 1024 ))
-  echo "Largest free block on $DISK: ${FREE_GIB} GiB"
-  [[ $FREE_GIB -ge $MIN_GIB ]] || die "need at least ${MIN_GIB} GiB of unallocated space, found ${FREE_GIB} GiB.
-Shrink an existing partition first — from Windows use Disk Management, from
-Linux use gparted — then run the installer again."
-
-  if [[ $UEFI -eq 1 ]]; then
-    # Reuse the other OS's EFI System Partition; formatting it would destroy
-    # that OS's bootloader.
-    EFIP=$(lsblk -pnro NAME,PARTTYPE "$DISK" | awk '$2=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"{print $1; exit}')
-    [[ -n $EFIP ]] || die "no EFI System Partition found on $DISK; cannot install alongside on UEFI"
-    FORMAT_EFI=0
-    echo "Reusing existing EFI System Partition $EFIP (will not be formatted)"
-  fi
-
-  before=$(lsblk -pnro NAME "$DISK" | tail -n +2 | sort)
-  sgdisk -n 0:0:0 -t 0:8304 -c 0:CyberOS "$DISK" >/dev/null || die "failed to create the new partition"
-  partprobe "$DISK" 2>/dev/null || true; udevadm settle; sleep 1
-  after=$(lsblk -pnro NAME "$DISK" | tail -n +2 | sort)
-  ROOTP=$(comm -13 <(echo "$before") <(echo "$after") | head -1)
-  [[ -b ${ROOTP:-/nonexistent} ]] || die "could not identify the partition just created"
-  echo "Created $ROOTP for /"
-  MODE=manual                      # the rest of the install is the manual path
-fi
-
-if [[ $MODE == manual ]]; then
-  [[ -b ${ROOTP:-/nonexistent} ]] || die "--root <partition> is required for manual mode"
-  [[ $UEFI -eq 0 || -b ${EFIP:-/nonexistent} ]] || die "--efi <partition> is required on UEFI systems"
-  for p_ in $ROOTP $EFIP $HOMEP; do grep -q "^$p_ " /proc/mounts && die "$p_ is mounted — unmount it first"; done
-  [[ $ROOTP != "$EFIP" && $ROOTP != "$HOMEP" ]] || die "root/efi/home must be different partitions"
-else
-  grep -q "^$DISK" /proc/mounts 2>/dev/null && die "$DISK is mounted — unmount it first"
-fi
-
-# ---------------------------------------------------------------- account details
+# ============================================================================
+#  INTERACTIVE CLI WIZARD (Archinstall / Omarchy style)
+# ============================================================================
 if [[ $YES -eq 0 ]]; then
-  read -rp "Hostname [$HOSTNAME_]: " x; HOSTNAME_=${x:-$HOSTNAME_}
-  read -rp "Username [$USER_]: " x; USER_=${x:-$USER_}
-  while [[ -z $PASS ]]; do read -rsp "Password for $USER_ (typing is hidden): " PASS; echo; done
-  read -rsp "Root password [same as user] (hidden): " ROOTPASS; echo
-  read -rp "Timezone [$TZ_]: " x; TZ_=${x:-$TZ_}
-  read -rp "Filesystem ext4/btrfs [$FS]: " x; FS=${x:-$FS}
-  echo
-  if [[ $MODE == erase ]]; then
-    lsblk "$DISK"; echo
-    read -rp "Type ERASE to wipe $DISK and install CyberOS: " c; [[ $c == ERASE ]] || die "aborted"
-  else
-    echo "Summary:  /     -> $ROOTP  (format $FS)"
-    if [[ -n $EFIP ]];  then echo "          /boot/efi -> $EFIP  ($([[ $FORMAT_EFI -eq 1 ]] && echo format || echo keep))"; fi
-    if [[ -n $HOMEP ]]; then echo "          /home -> $HOMEP  ($([[ $FORMAT_HOME -eq 1 ]] && echo format || echo keep))"; fi
-    read -rp "Type INSTALL to proceed: " c; [[ $c == INSTALL ]] || die "aborted"
+  render_banner
+  printf "${C_DIM}  Detected Firmware Mode: %s${C_RESET}\n\n" "$([[ $UEFI -eq 1 ]] && echo "UEFI" || echo "Legacy BIOS")"
+
+  # ------------------------------------------------------------ Step 1: Disk
+  if [[ -z $DISK ]]; then
+    printf "${C_GOLD}${C_BOLD}[Step 1/6] Select Target Disk${C_RESET}\n"
+    live_med=$(get_live_medium)
+
+    disks=()
+    disk_labels=()
+    while IFS= read -r line; do
+      [[ -z $line ]] && continue
+      dev=$(echo "$line" | awk '{print $1}')
+      size=$(echo "$line" | awk '{print $2}')
+      type=$(echo "$line" | awk '{print $3}')
+      model=$(echo "$line" | awk '{$1=$2=$3=""; print $0}' | sed -e 's/^[[:space:]]*//')
+
+      if [[ $type != "disk" ]] || [[ $dev =~ ^/dev/(zram|loop|ram|sr|fd) ]] || [[ $dev == "$live_med" ]]; then
+        continue
+      fi
+
+      disks+=("$dev")
+      disk_labels+=("$dev  (${size})  ${model:0:32}")
+    done < <(lsblk -dnpo NAME,SIZE,TYPE,MODEL 2>/dev/null)
+
+    if [[ ${#disks[@]} -eq 0 ]]; then
+      die "No suitable target disks detected on this system."
+    fi
+
+    printf "${C_GRAY}  ┌──────────────────────────────────────────────────────────────────┐${C_RESET}\n"
+    for i in "${!disks[@]}"; do
+      printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}[%d]${C_RESET} %-59s ${C_GRAY}│${C_RESET}\n" "$((i+1))" "${disk_labels[$i]}"
+    done
+    printf "${C_GRAY}  └──────────────────────────────────────────────────────────────────┘${C_RESET}\n"
+
+    while true; do
+      read -rp "  Select disk number [1-${#disks[@]}] (default: 1): " choice
+      choice=${choice:-1}
+      if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#disks[@]} ]]; then
+        DISK="${disks[$((choice-1))]}"
+        break
+      elif [[ -b "$choice" ]]; then
+        DISK="$choice"
+        break
+      else
+        printf "${C_RED}  Invalid selection. Please choose a number between 1 and %d.${C_RESET}\n" "${#disks[@]}"
+      fi
+    done
+    printf "\n"
   fi
+  [[ -b $DISK ]] || die "$DISK is not a block device"
+
+  # ------------------------------------------------------------ Step 2: Mode
+  if [[ -z $MODE ]]; then
+    printf "${C_GOLD}${C_BOLD}[Step 2/6] Installation Type for %s${C_RESET}\n" "$DISK"
+    printf "${C_GRAY}  ┌──────────────────────────────────────────────────────────────────┐${C_RESET}\n"
+    printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}[1]${C_RESET} ${C_GREEN}Erase whole disk${C_RESET}    (Automatic layout: BIOS + EFI + root)   ${C_GRAY}│${C_RESET}\n"
+    printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}[2]${C_RESET} ${C_CYAN}Install alongside${C_RESET}   (Use free unallocated space on disk)    ${C_GRAY}│${C_RESET}\n"
+    printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}[3]${C_RESET} ${C_GOLD}Custom manual${C_RESET}       (cfdisk / pick partitions manually)     ${C_GRAY}│${C_RESET}\n"
+    printf "${C_GRAY}  └──────────────────────────────────────────────────────────────────┘${C_RESET}\n"
+
+    while true; do
+      read -rp "  Choose installation type [1/2/3] (default: 1): " m
+      m=${m:-1}
+      case "$m" in
+        1) MODE=erase; break;;
+        2) MODE=alongside; break;;
+        3) MODE=manual; break;;
+        *) printf "${C_RED}  Please enter 1, 2, or 3.${C_RESET}\n";;
+      esac
+    done
+    printf "\n"
+  fi
+
+  # Manual partitioning handler
+  if [[ $MODE == manual ]]; then
+    show_parts
+    read -rp "  Open cfdisk to edit partition table on $DISK? [Y/n]: " x
+    if [[ ${x:-Y} =~ ^[Yy] ]]; then
+      printf "${C_DIM}  Tips: GPT disks need a 1M 'BIOS boot' partition and an EFI partition (>=300M, FAT32) for UEFI.${C_RESET}\n"
+      read -rp "  Press Enter to open cfdisk..." _
+      cfdisk "$DISK"; partprobe "$DISK" 2>/dev/null || true; udevadm settle
+    fi
+    show_parts
+    while [[ -z $ROOTP || ! -b $ROOTP ]]; do read -rp "  Root (/) partition (will be FORMATTED as $FS): " ROOTP; done
+    if [[ $UEFI -eq 1 ]]; then
+      while [[ -z $EFIP || ! -b $EFIP ]]; do read -rp "  EFI System partition (e.g. ${DISK}1): " EFIP; done
+      if blkid -o value -s TYPE "$EFIP" 2>/dev/null | grep -q vfat; then
+        read -rp "  Format $EFIP? (say n to keep existing Windows/Linux EFI) [y/N]: " x; [[ $x =~ ^[Yy] ]] && FORMAT_EFI=1
+      else FORMAT_EFI=1; fi
+    else
+      read -rp "  EFI System partition (optional on BIOS, Enter to skip): " EFIP
+      [[ -n $EFIP && ! -b $EFIP ]] && die "$EFIP is not a partition"
+      [[ -n $EFIP ]] && { read -rp "  Format $EFIP? [y/N]: " x; [[ $x =~ ^[Yy] ]] && FORMAT_EFI=1; }
+    fi
+    read -rp "  Separate /home partition (optional, Enter to skip): " HOMEP
+    if [[ -n $HOMEP ]]; then
+      [[ -b $HOMEP ]] || die "$HOMEP is not a partition"
+      read -rp "  Format $HOMEP? (n keeps existing data) [y/N]: " x; [[ $x =~ ^[Yy] ]] && FORMAT_HOME=1
+    fi
+    printf "\n"
+  fi
+
+  # Alongside mode space check
+  if [[ $MODE == alongside ]]; then
+    MIN_GIB=25
+    command -v sgdisk >/dev/null || die "sgdisk not found"
+    [[ $(blkid -o value -s PTTYPE "$DISK") == gpt ]] || die "Installing alongside requires a GPT disk; $DISK is not GPT"
+
+    FREE_START=$(sgdisk -F "$DISK") || die "cannot read free space on $DISK"
+    FREE_END=$(sgdisk -E "$DISK")   || die "cannot read free space on $DISK"
+    FREE_GIB=$(( (FREE_END - FREE_START + 1) * 512 / 1024 / 1024 / 1024 ))
+    printf "  Largest free block on %s: ${C_BOLD}%d GiB${C_RESET}\n" "$DISK" "$FREE_GIB"
+    [[ $FREE_GIB -ge $MIN_GIB ]] || die "Need at least ${MIN_GIB} GiB of unallocated space, found ${FREE_GIB} GiB."
+
+    if [[ $UEFI -eq 1 ]]; then
+      EFIP=$(lsblk -pnro NAME,PARTTYPE "$DISK" | awk '$2=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"{print $1; exit}')
+      [[ -n $EFIP ]] || die "No EFI System Partition found on $DISK; cannot install alongside on UEFI"
+      FORMAT_EFI=0
+      printf "  ${C_DIM}Reusing existing EFI System Partition: %s${C_RESET}\n" "$EFIP"
+    fi
+
+    before=$(lsblk -pnro NAME "$DISK" | tail -n +2 | sort)
+    sgdisk -n 0:0:0 -t 0:8304 -c 0:CyberOS "$DISK" >/dev/null || die "Failed to create partition in free space"
+    partprobe "$DISK" 2>/dev/null || true; udevadm settle; sleep 1
+    after=$(lsblk -pnro NAME "$DISK" | tail -n +2 | sort)
+    ROOTP=$(comm -13 <(echo "$before") <(echo "$after") | head -1)
+    [[ -b ${ROOTP:-/nonexistent} ]] || die "Could not identify the newly created partition"
+    printf "  ${C_GREEN}Created %s for CyberOS root (/)${C_RESET}\n\n" "$ROOTP"
+    MODE=manual
+  fi
+
+  # ------------------------------------------------------------ Step 3: Account
+  printf "${C_GOLD}${C_BOLD}[Step 3/6] User Account & System Configuration${C_RESET}\n"
+  read -rp "  Computer hostname [$HOSTNAME_]: " x; HOSTNAME_=${x:-$HOSTNAME_}
+  while true; do
+    read -rp "  Username [$USER_]: " x; USER_=${x:-$USER_}
+    if [[ "$USER_" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+      break
+    else
+      printf "${C_RED}  Username must consist of lowercase letters, digits, '_' or '-'.${C_RESET}\n"
+    fi
+  done
+
+  while true; do
+    read -rsp "  Enter password for $USER_: " p1; echo
+    if [[ -z $p1 ]]; then
+      printf "${C_RED}  Password cannot be empty.${C_RESET}\n"
+      continue
+    fi
+    read -rsp "  Confirm password for $USER_: " p2; echo
+    if [[ "$p1" != "$p2" ]]; then
+      printf "${C_RED}  Passwords do not match. Please try again.${C_RESET}\n"
+      continue
+    fi
+    PASS="$p1"
+    break
+  done
+
+  read -rsp "  Root password [Enter to use same as $USER_]: " rp; echo
+  ROOTPASS=${rp:-$PASS}
+  printf "\n"
+
+  # ------------------------------------------------------------ Step 4: Timezone
+  DEFAULT_TZ=$(detect_default_timezone)
+  printf "${C_GOLD}${C_BOLD}[Step 4/6] Timezone & Localization${C_RESET}\n"
+  while true; do
+    read -rp "  System timezone [$DEFAULT_TZ]: " x; TZ_=${x:-$DEFAULT_TZ}
+    if [[ -f "/usr/share/zoneinfo/$TZ_" ]]; then
+      break
+    else
+      printf "${C_RED}  Unknown timezone '%s'. Example: Africa/Accra, Europe/London, America/New_York${C_RESET}\n" "$TZ_"
+    fi
+  done
+  printf "\n"
+
+  # ------------------------------------------------------------ Step 5: Options
+  printf "${C_GOLD}${C_BOLD}[Step 5/6] Storage & Security Options${C_RESET}\n"
+  while true; do
+    read -rp "  Filesystem (ext4 / btrfs) [$FS]: " x; FS=${x:-$FS}
+    if [[ $FS == ext4 || $FS == btrfs ]]; then
+      break
+    else
+      printf "${C_RED}  Please specify either 'ext4' or 'btrfs'.${C_RESET}\n"
+    fi
+  done
+
+  read -rp "  Swap file size in GiB (0 for none) [$SWAP_GB]: " x; SWAP_GB=${x:-$SWAP_GB}
+
+  read -rp "  Encrypt disk with LUKS2 full-disk encryption? [y/N]: " enc
+  if [[ ${enc:-n} =~ ^[Yy] ]]; then
+    ENCRYPT=1
+    while true; do
+      read -rsp "  Enter LUKS encryption passphrase (min 8 chars): " luks1; echo
+      if [[ ${#luks1} -lt 8 ]]; then
+        printf "${C_RED}  Passphrase must be at least 8 characters.${C_RESET}\n"
+        continue
+      fi
+      read -rsp "  Confirm LUKS encryption passphrase: " luks2; echo
+      if [[ "$luks1" != "$luks2" ]]; then
+        printf "${C_RED}  Passphrases do not match. Please try again.${C_RESET}\n"
+        continue
+      fi
+      LUKSPASS="$luks1"
+      break
+    done
+  else
+    ENCRYPT=0
+  fi
+  printf "\n"
+
+  # ------------------------------------------------------------ Step 6: Confirmation
+  render_banner
+  printf "${C_GOLD}${C_BOLD}[Step 6/6] Review Installation Summary${C_RESET}\n"
+  disk_info=$(lsblk -dno SIZE,MODEL "$DISK" 2>/dev/null || echo "")
+
+  printf "${C_GRAY}  ┌──────────────────────────────────────────────────────────────────┐${C_RESET}\n"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "Target Disk" "$DISK ($disk_info)"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "Install Mode" "$([[ $MODE == erase ]] && echo "ERASE WHOLE DISK" || echo "Custom / Alongside")"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "Filesystem" "$FS (${SWAP_GB} GiB swap)"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "Disk Encryption" "$([[ $ENCRYPT -eq 1 ]] && echo "Enabled (LUKS2)" || echo "Disabled")"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "Computer Name" "$HOSTNAME_"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "User Account" "$USER_ (sudo / wheel)"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "Timezone" "$TZ_"
+  printf "  ${C_GRAY}│${C_RESET} ${C_BOLD}%-16s${C_RESET}: %-46s ${C_GRAY}│${C_RESET}\n" "Firmware Mode" "$([[ $UEFI -eq 1 ]] && echo "UEFI" || echo "Legacy BIOS")"
+  printf "${C_GRAY}  └──────────────────────────────────────────────────────────────────┘${C_RESET}\n\n"
+
+  if [[ $MODE == erase ]]; then
+    printf "  ${C_RED}${C_BOLD}WARNING: ALL DATA ON %s WILL BE PERMANENTLY ERASED!${C_RESET}\n" "$DISK"
+    read -rp "  Type 'ERASE' or 'yes' to proceed: " confirm
+    [[ "$confirm" == "ERASE" || "$confirm" == "yes" || "$confirm" == "YES" ]] || die "Installation cancelled by user."
+  else
+    read -rp "  Type 'INSTALL' or 'yes' to proceed: " confirm
+    [[ "$confirm" == "INSTALL" || "$confirm" == "yes" || "$confirm" == "YES" ]] || die "Installation cancelled by user."
+  fi
+  printf "\n"
 fi
-[[ -n $PASS ]] || die "--password is required with --yes"
+
+# Validation for unattended runs
+[[ -n $DISK ]] || die "--disk <device> is required"
+[[ -n $PASS ]] || die "--password or --password-stdin is required"
 ROOTPASS=${ROOTPASS:-$PASS}
 [[ -f /usr/share/zoneinfo/$TZ_ ]] || die "unknown timezone $TZ_"
 [[ $FS == ext4 || $FS == btrfs ]] || die "filesystem must be ext4 or btrfs"
 
-# ---------------------------------------------------------------- partition (erase mode)
+if [[ $DRY_RUN -eq 0 ]]; then
+  if [[ $MODE == manual ]]; then
+    [[ -b ${ROOTP:-/nonexistent} ]] || die "--root <partition> is required for manual mode"
+    [[ $UEFI -eq 0 || -b ${EFIP:-/nonexistent} ]] || die "--efi <partition> is required on UEFI systems"
+    for p_ in $ROOTP $EFIP $HOMEP; do grep -q "^$p_ " /proc/mounts && die "$p_ is mounted — unmount it first"; done
+    [[ $ROOTP != "$EFIP" && $ROOTP != "$HOMEP" ]] || die "root/efi/home must be different partitions"
+  else
+    grep -q "^$DISK" /proc/mounts 2>/dev/null && die "$DISK is mounted — unmount it first"
+  fi
+fi
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  printf "${C_GREEN}${C_BOLD}  ✔ [DRY RUN] Summary confirmed!${C_RESET}\n"
+  printf "${C_DIM}  In a live session, this would partition %s, format as %s, copy files, and install GRUB.${C_RESET}\n\n" "$DISK" "$FS"
+  printf "${C_CYAN}  Dry run completed successfully. No changes were made to your disks.${C_RESET}\n\n"
+  exit 0
+fi
+
+# ============================================================================
+#  INSTALLATION EXECUTION
+# ============================================================================
 swapoff -a 2>/dev/null || true
+
+# ---------------------------------------------------------------- Step 1: Partition
 if [[ $MODE == erase ]]; then
-  msg "Partitioning $DISK (GPT: BIOS-boot 1M, EFI 1G, root rest)"
+  msg "[1/5] Partitioning $DISK (GPT: BIOS-boot 1M, EFI 1G, root rest)"
   wipefs -af "$DISK" >/dev/null
   sgdisk -Z "$DISK" >/dev/null
   sgdisk -n1:0:+1M   -t1:ef02 -c1:"BIOS boot" \
          -n2:0:+1G   -t2:ef00 -c2:"EFI" \
          -n3:0:0     -t3:8304 -c3:"CyberOS root" "$DISK" >/dev/null
-  # Legacy BIOSes (VMware, some PCs) only boot GPT disks if the protective MBR is flagged bootable
   parted -s "$DISK" disk_set pmbr_boot on
   partprobe "$DISK"; udevadm settle; sleep 1
   EFIP=$(part 2); ROOTP=$(part 3); FORMAT_EFI=1; HOMEP=""
 else
-  # keep whatever table the user made; just make sure a GPT disk is BIOS-bootable too
-  if [[ $(blkid -o value -s PTTYPE "$DISK" 2>/dev/null) == gpt ]]; then parted -s "$DISK" disk_set pmbr_boot on 2>/dev/null || true; fi
+  if [[ $(blkid -o value -s PTTYPE "$DISK" 2>/dev/null) == gpt ]]; then
+    parted -s "$DISK" disk_set pmbr_boot on 2>/dev/null || true
+  fi
 fi
 
-# ---------------------------------------------------------------- encrypt
-# Done here, between partitioning and formatting: everything below formats and
-# mounts $ROOTP, so pointing ROOTP at the mapper makes the rest of the installer
-# encryption-agnostic.
+# ---------------------------------------------------------------- Step 2: Encrypt
 if [[ $ENCRYPT -eq 1 ]]; then
-  [[ -n $LUKSPASS ]] || die "--encrypt needs a passphrase: supply it as line 3 of --password-stdin"
+  [[ -n $LUKSPASS ]] || die "--encrypt needs a passphrase: supply it as line 3 of --password-stdin or interactively"
   command -v cryptsetup >/dev/null || die "cryptsetup not available"
-  msg "Encrypting $ROOTP (LUKS2)"
+  msg "[2/5] Encrypting $ROOTP (LUKS2)"
   printf '%s' "$LUKSPASS" | cryptsetup luksFormat --type luks2 --batch-mode "$ROOTP" - \
     || die "luksFormat failed on $ROOTP"
   LUKS_UUID=$(blkid -o value -s UUID "$ROOTP")
@@ -371,8 +599,8 @@ if [[ $ENCRYPT -eq 1 ]]; then
   ROOTP=/dev/mapper/cryptroot
 fi
 
-# ---------------------------------------------------------------- format + mount
-msg "Formatting"
+# ---------------------------------------------------------------- Step 3: Format & Mount
+msg "[2/5] Formatting and mounting filesystems"
 if [[ $FS == btrfs ]]; then
   mkfs.btrfs -f -L CYBEROS "$ROOTP" >/dev/null
   settle_fs "$ROOTP"
@@ -388,22 +616,20 @@ else
   mount -t ext4 "$ROOTP" /mnt
   mkdir -p /mnt/home
 fi
+
 if [[ -n $HOMEP ]]; then
   if [[ $FORMAT_HOME -eq 1 ]]; then mkfs.ext4 -qF -L CYBEROS_HOME "$HOMEP"; settle_fs "$HOMEP"; fi
   mount "$HOMEP" /mnt/home
 fi
+
 if [[ -n $EFIP ]]; then
   if [[ $FORMAT_EFI -eq 1 ]]; then mkfs.fat -F32 -n CYBEROS_EFI "$EFIP" >/dev/null; settle_fs "$EFIP"; fi
   mkdir -p /mnt/boot/efi
-  # Always pass -t vfat. On a partition created moments ago, libblkid can still
-  # report no filesystem, and `mount` then probes only what is already in
-  # /proc/filesystems (ext4/ext3/ext2). vfat is not loaded on the live ISO, so
-  # autodetection fails and set -e aborts the install just before the rsync.
   mount -t vfat "$EFIP" /mnt/boot/efi
 fi
 
-# ---------------------------------------------------------------- copy system
-msg "Copying system (this takes a few minutes)"
+# ---------------------------------------------------------------- Step 4: Copy System
+msg "[3/5] Copying CyberOS system files (this may take a few minutes)..."
 rsync -aHAXx --info=progress2 --no-inc-recursive \
   --exclude={/dev/*,/proc/*,/sys/*,/tmp/*,/run/*,/mnt/*,/media/*,/lost+found,/boot/efi/*} \
   --exclude=/etc/mkinitcpio.conf.d/archiso.conf \
@@ -425,39 +651,37 @@ rsync -aHAXx --info=progress2 --no-inc-recursive \
   --exclude=/etc/motd \
   --exclude=/root/customize_airootfs.sh \
   / /mnt/
+
 mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}
 chmod 1777 /mnt/tmp
 
-# ---------------------------------------------------------------- configure
-msg "Configuring installed system"
+# ---------------------------------------------------------------- Step 5: Configure
+msg "[4/5] Configuring system, users and security"
 echo "$HOSTNAME_" > /mnt/etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" > /mnt/etc/hosts
-rm -f /mnt/etc/resolv.conf; touch /mnt/etc/resolv.conf     # NetworkManager manages it
+rm -f /mnt/etc/resolv.conf; touch /mnt/etc/resolv.conf
 printf 'CyberOS \\r (\\l)\n\n' > /mnt/etc/issue
-cat > /mnt/etc/motd <<'M'
+cat > /mnt/etc/motd <<'MOTD'
   CyberOS — Cyber Department. Type `fastfetch` for system info.
-M
-cat > /mnt/etc/mkinitcpio.d/linux.preset <<'M'
-# mkinitcpio preset file for the 'linux' package
+MOTD
+
+cat > /mnt/etc/mkinitcpio.d/linux.preset <<'PRESET'
 ALL_kver="/boot/vmlinuz-linux"
 PRESETS=('default' 'fallback')
 default_image="/boot/initramfs-linux.img"
 fallback_image="/boot/initramfs-linux-fallback.img"
 fallback_options="-S autodetect"
-M
-cat > /mnt/etc/mkinitcpio.d/linux-lts.preset <<'M'
-# mkinitcpio preset file for the 'linux-lts' package
+PRESET
+
+cat > /mnt/etc/mkinitcpio.d/linux-lts.preset <<'PRESET'
 ALL_kver="/boot/vmlinuz-linux-lts"
 PRESETS=('default' 'fallback')
 default_image="/boot/initramfs-linux-lts.img"
 fallback_image="/boot/initramfs-linux-lts-fallback.img"
 fallback_options="-S autodetect"
-M
-# archiso keeps the kernel on the ISO rather than in the airootfs, so the live
-# /boot is empty and the copied system has no kernel — mkinitcpio then fails with
-# "'/boot/vmlinuz-linux' must be readable". Restore both; the initramfs itself is
-# regenerated by mkinitcpio inside the chroot below.
-restore_kernel linux /run/archiso/bootmnt /mnt || die "kernel image not found"
+PRESET
+
+restore_kernel linux /run/archiso/bootmnt /mnt || die "linux kernel image not found"
 if ! restore_kernel linux-lts /run/archiso/bootmnt /mnt; then
   echo "WARNING: no LTS kernel found; this system will have no fallback kernel"
   rm -f /mnt/etc/mkinitcpio.d/linux-lts.preset
@@ -465,7 +689,7 @@ fi
 
 genfstab -U /mnt > /mnt/etc/fstab
 
-# swapfile
+# Swapfile
 if [[ $SWAP_GB -gt 0 ]]; then
   if [[ $FS == btrfs ]]; then
     btrfs subvolume create /mnt/swap >/dev/null
@@ -477,8 +701,8 @@ if [[ $SWAP_GB -gt 0 ]]; then
   fi
 fi
 
-# first-boot oneshot
-cat > /mnt/etc/systemd/system/cyberos-firstboot.service <<'M'
+# First boot service
+cat > /mnt/etc/systemd/system/cyberos-firstboot.service <<'SERVICE'
 [Unit]
 Description=CyberOS first boot tasks
 After=local-fs.target
@@ -487,16 +711,15 @@ Type=oneshot
 ExecStart=/usr/local/bin/cyberos-firstboot
 [Install]
 WantedBy=multi-user.target
-M
+SERVICE
 
+# Encryption configuration
 if [[ $ENCRYPT -eq 1 ]]; then
   CUR=$(sed -nE 's/^HOOKS=\((.*)\)$/\1/p' /mnt/etc/mkinitcpio.conf)
-  NEW=$(luks_hooks "$CUR") || die "cannot place the encrypt hook in mkinitcpio.conf"
+  NEW=$(luks_hooks "$CUR") || die "cannot place encrypt hook in mkinitcpio.conf"
   sed -i -E "s|^HOOKS=\(.*\)$|HOOKS=($NEW)|" /mnt/etc/mkinitcpio.conf
-  FRAG=$(luks_cmdline "$LUKS_UUID" cryptroot "$NEW") || die "cannot build the LUKS kernel command line"
+  FRAG=$(luks_cmdline "$LUKS_UUID" cryptroot "$NEW") || die "cannot build LUKS kernel command line"
   sed -i -E "s|^GRUB_CMDLINE_LINUX=\"(.*)\"$|GRUB_CMDLINE_LINUX=\"\\1 $FRAG\"|" /mnt/etc/default/grub
-  # There is no separate /boot, so GRUB itself has to unlock the container before
-  # it can read the kernel. Without this an encrypted install does not boot at all.
   if grep -q '^#\?GRUB_ENABLE_CRYPTODISK=' /mnt/etc/default/grub; then
     sed -i -E 's|^#?GRUB_ENABLE_CRYPTODISK=.*|GRUB_ENABLE_CRYPTODISK=y|' /mnt/etc/default/grub
   else
@@ -504,8 +727,7 @@ if [[ $ENCRYPT -eq 1 ]]; then
   fi
 fi
 
-# Recovery entries GRUB's generator cannot produce, because they need an extra
-# kernel argument. Written here, where the root UUID is already known.
+# Recovery entries
 ROOT_UUID=$(blkid -o value -s UUID "$ROOTP")
 if [[ -n $ROOT_UUID ]]; then
   SAFE_ROOT=""
@@ -513,10 +735,10 @@ if [[ -n $ROOT_UUID ]]; then
   grub_safe_entries "$ROOT_UUID" "$SAFE_ROOT" > /mnt/etc/grub.d/40_custom
   chmod 755 /mnt/etc/grub.d/40_custom
 else
-  echo "WARNING: no UUID for $ROOTP; skipping the recovery boot entries"
+  echo "WARNING: no UUID for $ROOTP; skipping recovery boot entries"
 fi
 
-msg "Finalising inside chroot"
+msg "[5/5] Finalizing inside chroot & installing bootloader"
 arch-chroot /mnt /bin/bash -e <<CH
 ln -sf /usr/share/zoneinfo/$TZ_ /etc/localtime
 hwclock --systohc || true
@@ -533,41 +755,54 @@ echo "root:$ROOTPASS" | chpasswd
 # drop live-only pieces
 pacman -Rns --noconfirm mkinitcpio-archiso >/dev/null 2>&1 || true
 rm -rf /etc/mkinitcpio.conf.d/archiso.conf /etc/sddm.conf.d/zz-live-autologin.conf
-# The installer only works from the live medium. Left in place it shows up in the
-# launcher on an installed machine and dies with "must be run from the live ISO",
-# so drop it along with its menu entry and keybind.
 rm -f /usr/share/applications/cyberos-install.desktop \
       /usr/local/bin/cyberos-install /usr/local/bin/cyberos-install-gui
 sed -i '/gtk-launch cyberos-install/d' /etc/skel/.config/hypr/hyprland.lua /home/*/.config/hypr/hyprland.lua 2>/dev/null || true
 systemctl enable NetworkManager sddm bluetooth cyberos-firstboot >/dev/null 2>&1
 systemctl disable ModemManager >/dev/null 2>&1 || true
 
-# pacman keyring for future online updates
+# pacman keyring
 pacman-key --init >/dev/null 2>&1
 pacman-key --populate archlinux >/dev/null 2>&1
 
 mkinitcpio -P
 
-# bootloader: ALWAYS install both BIOS and UEFI GRUB so the disk boots whatever the firmware mode
+# Bootloader setup
 sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="CyberOS"/' /etc/default/grub
-# GRUB sorts kernel filenames in reverse, and vmlinuz-linux-lts sorts after
-# vmlinuz-linux, so without this the LTS fallback becomes the DEFAULT entry --
-# the opposite of why it ships. Pin the main kernel explicitly.
 grep -q '^GRUB_TOP_LEVEL=' /etc/default/grub \
   && sed -i 's|^GRUB_TOP_LEVEL=.*|GRUB_TOP_LEVEL=/boot/vmlinuz-linux|' /etc/default/grub \
   || echo 'GRUB_TOP_LEVEL=/boot/vmlinuz-linux' >> /etc/default/grub
 sed -i 's/^#\?GRUB_DISABLE_OS_PROBER=.*/GRUB_DISABLE_OS_PROBER=false/' /etc/default/grub
+
 grub-install --target=i386-pc --recheck "$DISK" || echo "WARNING: BIOS grub-install failed (fine on UEFI-only machines)"
 if mountpoint -q /boot/efi; then
-  # removable path (EFI/BOOT/BOOTX64.EFI): works with no NVRAM entry, from a BIOS-booted live session too
   grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=CyberOS --removable --no-nvram --recheck
-  # proper NVRAM entry when we are actually running under UEFI
   [[ $UEFI -eq 1 ]] && grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=CyberOS --recheck || true
 fi
 grub-mkconfig -o /boot/grub/grub.cfg
 CH
 
-msg "Done. Unmounting."
+msg "Unmounting target filesystems..."
 sync; umount -R /mnt
-echo
-echo "CyberOS installed on $DISK  (user: $USER_, host: $HOSTNAME_). Remove the USB and reboot."
+
+printf "\n${C_GREEN}${C_BOLD}"
+printf "  ┌──────────────────────────────────────────────────────────────────┐\n"
+printf "  │                   INSTALLATION COMPLETE!                         │\n"
+printf "  ├──────────────────────────────────────────────────────────────────┤\n"
+printf "  │  CyberOS was successfully installed.                             │\n"
+printf "  │                                                                  │\n"
+printf "  │  Target Disk : %-49s │\n" "$DISK"
+printf "  │  User        : %-49s │\n" "$USER_"
+printf "  │  Hostname    : %-49s │\n" "$HOSTNAME_"
+printf "  │                                                                  │\n"
+printf "  │  Please remove your installation media before restarting.        │\n"
+printf "  └──────────────────────────────────────────────────────────────────┘\n"
+printf "${C_RESET}\n"
+
+if [[ $YES -eq 0 ]]; then
+  read -rp "  Reboot system now? [Y/n]: " reb
+  if [[ ${reb:-Y} =~ ^[Yy] ]]; then
+    printf "${C_CYAN}  Rebooting system...${C_RESET}\n"
+    systemctl reboot
+  fi
+fi

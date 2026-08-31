@@ -15,6 +15,8 @@ ShellRoot {
         delegate: Bar.Bar { required property var modelData; screen: modelData }
     }
 
+    Cyber.DesktopClock {}
+
     // Popup surfaces land here (launcher in a later task). LazyLoader keeps
     // startup cheap and a broken popup from taking the bar down.
     //
