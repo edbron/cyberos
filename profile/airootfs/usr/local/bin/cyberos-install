@@ -253,6 +253,16 @@ valid_username() {
   [[ $1 =~ ^[a-z_][a-z0-9_-]*$ ]]
 }
 
+# valid_hostname <name> -- a single hostname label (no dots: this box is
+# never joined to a domain here). HOSTNAME_ is later written verbatim into
+# /etc/hostname, /etc/hosts, and this script's own ANSI summary box (fixed-
+# width printf fields); an unrestricted value can corrupt /etc/hosts with an
+# embedded newline or corrupt/spoof the terminal via raw escape sequences, so
+# it is refused up front the same way valid_username() is.
+valid_hostname() {
+  [[ $1 =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]
+}
+
 # valid_luks_passphrase <pass> -- the interactive wizard enforces 8+ chars;
 # unattended/CLI use (--encrypt --password-stdin) MUST too, since it is the
 # only thing protecting the disk and a client-side-only check is not a check.
@@ -450,7 +460,15 @@ if [[ $YES -eq 0 ]]; then
 
   # ------------------------------------------------------------ Step 3: Account
   printf "${C_GOLD}${C_BOLD}[Step 3/6] User Account & System Configuration${C_RESET}\n"
-  read -rp "  Computer hostname [$HOSTNAME_]: " x; HOSTNAME_=${x:-$HOSTNAME_}
+  while true; do
+    read -rp "  Computer hostname [$HOSTNAME_]: " x; x=${x:-$HOSTNAME_}
+    if valid_hostname "$x"; then
+      HOSTNAME_=$x
+      break
+    else
+      printf "${C_RED}  Hostname must be letters, digits or '-', and cannot start/end with '-'.${C_RESET}\n"
+    fi
+  done
   while true; do
     read -rp "  Username [$USER_]: " x; USER_=${x:-$USER_}
     if valid_username "$USER_"; then
@@ -561,6 +579,7 @@ ROOTPASS=${ROOTPASS:-$PASS}
 [[ -f /usr/share/zoneinfo/$TZ_ ]] || die "unknown timezone $TZ_"
 [[ $FS == ext4 || $FS == btrfs ]] || die "filesystem must be ext4 or btrfs"
 valid_username "$USER_" || die "--user must match [a-z_][a-z0-9_-]* (got: $USER_)"
+valid_hostname "$HOSTNAME_" || die "--hostname must be a single letters/digits/- label (got: $HOSTNAME_)"
 if [[ $PASS_FROM_ARGV -eq 1 ]]; then
   echo "WARNING: --password puts the password in argv, readable via /proc/*/cmdline by any local user. Prefer --password-stdin." >&2
 fi

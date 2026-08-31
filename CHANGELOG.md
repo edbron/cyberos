@@ -25,6 +25,12 @@ own build metadata — not SemVer.
   (MPRIS track metadata, a window's own title) now render as plain text
   instead of Qt's default auto-detected rich text, closing a markup
   injection into the system bar.
+- Added `--hostname` character-set validation to `cyberos-install` (the
+  interactive and unattended paths both now require a single letters/
+  digits/`-` hostname label, same defense-in-depth reasoning as the
+  existing `--user` check): an unrestricted hostname could otherwise carry
+  a newline into `/etc/hosts` or raw escape sequences into the installer's
+  own ANSI summary box.
 
 ### Added
 

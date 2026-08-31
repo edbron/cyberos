@@ -90,6 +90,27 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "valid_hostname accepts a plain label" {
+  run valid_hostname "cyberos"
+  [ "$status" -eq 0 ]
+  run valid_hostname "lab-07"
+  [ "$status" -eq 0 ]
+}
+
+@test "valid_hostname rejects a value that would corrupt /etc/hosts or the ANSI summary box" {
+  run valid_hostname $'evil\nline'
+  [ "$status" -ne 0 ]
+  run valid_hostname "<b>x</b>"
+  [ "$status" -ne 0 ]
+}
+
+@test "valid_hostname rejects a leading or trailing hyphen" {
+  run valid_hostname "-bad"
+  [ "$status" -ne 0 ]
+  run valid_hostname "bad-"
+  [ "$status" -ne 0 ]
+}
+
 @test "valid_luks_passphrase enforces the 8-character floor the GUI also enforces" {
   run valid_luks_passphrase "short"
   [ "$status" -ne 0 ]
