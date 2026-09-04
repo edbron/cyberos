@@ -99,6 +99,23 @@ QS="$ROOT/profile/airootfs/etc/skel/.config/quickshell"
   [ "$status" -ne 0 ]
 }
 
+@test "files: extract lists the archive first and refuses a zip-slip entry before ever calling 7z x" {
+  f="$QS/apps/Files.qml"
+  # 7z l runs before 7z x, driven from the list process's own completion --
+  # the extract call sits inside listProc's stdout handler, not called
+  # directly from extract().
+  grep -q '"7z", "l", "-slt"' "$f"
+  run grep -F 'function extract(filePath)' "$f"
+  [ "$status" -eq 0 ]
+  ! grep -q 'function extract(filePath) { extractProc' "$f"
+  # Entries are parsed only after the archive's own header block ends --
+  # otherwise the archive's own (always-absolute) external path would be
+  # mistaken for an unsafe internal entry on every single extraction.
+  grep -q '"----------"' "$f"
+  grep -q 'p.startsWith("/")' "$f"
+  grep -q 'p.split("/").includes("..")' "$f"
+}
+
 @test "files: ipc target, desktop entry, and Super+E open it" {
   grep -q 'target: "files"' "$QS/shell.qml"
   d="$ROOT/profile/airootfs/usr/local/share/applications/cyberos-files.desktop"
@@ -118,6 +135,22 @@ QS="$ROOT/profile/airootfs/etc/skel/.config/quickshell"
     # only exists if profiledef.sh declares it.
     grep -q "\"/usr/local/bin/$w\"\]=\"0:0:755\"" "$ROOT/profile/profiledef.sh"
   done
+}
+
+# General form of the check above, driven by git's own tracked mode rather
+# than a hand-maintained list: every script committed 755 under
+# usr/local/bin must have a matching profiledef.sh entry, or mkarchiso's
+# --no-preserve=mode silently ships it non-executable. Missing exactly this
+# for cyberos-systemhealth-state and cyberos-toggle-touchscreen shipped both
+# features unusable on a real ISO -- git's own mode bit isn't enough, and
+# per-script tests only catch what someone remembers to write one for.
+@test "every 755-tracked usr/local/bin script has a profiledef.sh file_permissions entry" {
+  while IFS=$'\t' read -r mode path; do
+    [ "$mode" = "100755" ] || continue
+    name=$(basename "$path")
+    run grep -q "\"/usr/local/bin/$name\"\]=\"0:0:755\"" "$ROOT/profile/profiledef.sh"
+    [ "$status" -eq 0 ] || { echo "profiledef.sh is missing: [\"/usr/local/bin/$name\"]=\"0:0:755\""; false; }
+  done < <(git -C "$ROOT" ls-files -s profile/airootfs/usr/local/bin | awk '{print $1"\t"$4}')
 }
 
 # --- Battery chip opens power profiles, not the shutdown menu (2026-09-01)

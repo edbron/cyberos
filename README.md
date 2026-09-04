@@ -154,7 +154,7 @@ blue/magenta/cyan follow the macOS system colours.
 | Keys | Action |
 |------|--------|
 | `Super+Enter` | terminal (foot) |
-| `Super+D` | app launcher (rofi) |
+| `Super+D` | app launcher (native QML, `Tab` switches apps/files search) |
 | `Super+I` | Install CyberOS (live ISO) |
 | `Super+Tab` | window switcher |
 | `Super+.` / `Super+=` | emoji picker / calculator |
@@ -164,6 +164,7 @@ blue/magenta/cyan follow the macOS system colours.
 | `Super+1..0` | workspaces, `+Shift` move window |
 | `Super+F` / `V` | fullscreen / float |
 | `Super+Escape` | lock |
+| `Super+Shift+U` | toggle touchscreen on/off |
 | `Print` | screenshot region → clipboard |
 
 ## Notes / caveats

@@ -198,7 +198,7 @@ fi
 
 if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
   hyprctl reload >/dev/null 2>&1 || true
-  pkill -x swaybg >/dev/null 2>&1 || true
+  pkill -x swaybg 2>/dev/null && sleep 0.1 || true
   (setsid swaybg -m fill -i "$WALL" >/dev/null 2>&1 &)
   # The quickshell bar is not restarted: Theme.qml watches theme.json (below)
   # and re-themes live, so there is nothing to pkill/relaunch here -- the

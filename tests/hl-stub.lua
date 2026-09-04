@@ -1,5 +1,5 @@
 -- Minimal stand-in for Hyprland's `hl` API. Records what the config asks for.
-local calls = { bind = {}, bindcmd = {}, exec = {}, window_rule = 0, layer_rule = {}, cfg = {} }
+local calls = { bind = {}, bindcmd = {}, exec = {}, window_rule = 0, layer_rule = {}, cfg = {}, device = {} }
 local function dsp(name) return function(args) return { name = name, args = args } end end
 local function ns(prefix, names)
   local t = {}
@@ -21,6 +21,7 @@ hl = {
     return {}
   end,
   window_rule = function() calls.window_rule = calls.window_rule + 1; return {} end,
+  device = function(args) calls.device[#calls.device + 1] = args; return {} end,
   layer_rule = function(args) calls.layer_rule[#calls.layer_rule + 1] = args; return {} end,
   config = function(c)
     if c.general and c.general.col then calls.cfg.active_border = c.general.col.active_border end
@@ -42,4 +43,7 @@ function report()
     print("layer_rule ns=" .. tostring(ns))
   end
   print("active_border=" .. tostring(calls.cfg.active_border))
+  for _, d in ipairs(calls.device) do
+    print("device name=" .. tostring(d.name) .. " enabled=" .. tostring(d.enabled))
+  end
 end

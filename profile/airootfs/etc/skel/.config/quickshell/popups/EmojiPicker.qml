@@ -27,12 +27,17 @@ PanelWindow {
 
     signal closeRequested()
 
-    anchors { left: false; right: false; top: false; bottom: false }
-    implicitWidth: 560
-    implicitHeight: 420
+    // Fullscreen, transparent surface: the visible box below centres
+    // itself instead of relying on the window's own size, so
+    // Cyber.ClickOutside (this window's first child, right below) has a
+    // real "outside" region to catch a click in -- a window sized to just
+    // the popup itself has no such region.
+    anchors { left: true; right: true; top: true; bottom: true }
     color: "transparent"
     focusable: true
     aboveWindows: true
+
+    Cyber.ClickOutside { onOutsideClicked: root.closeRequested() }
 
     readonly property int columns: 8
 
@@ -115,11 +120,19 @@ PanelWindow {
     }
 
     Rectangle {
-        anchors.fill: parent
+        anchors.centerIn: parent
+        width: 560
+        height: 420
         radius: Cyber.Theme.radius
         color: Cyber.Theme.bg
         border.width: 1
         border.color: Cyber.Theme.border
+
+        // Swallows a click on blank space inside the popup: a plain
+        // Rectangle doesn't itself accept mouse events, so without this a
+        // click here would fall through to Cyber.ClickOutside behind the
+        // whole window and close the popup it landed inside.
+        MouseArea { anchors.fill: parent }
 
         ColumnLayout {
             anchors.fill: parent

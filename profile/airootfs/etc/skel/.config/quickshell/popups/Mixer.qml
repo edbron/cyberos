@@ -20,13 +20,17 @@ PanelWindow {
 
     signal closeRequested()
 
-    anchors { top: true; right: true }
-    margins { top: 44; right: 8 }
-    implicitWidth: 380
-    implicitHeight: 480
+    // Fullscreen, transparent surface: the visible box below positions
+    // itself via its own anchors/margins instead of the window's, so
+    // Cyber.ClickOutside (this window's first child, right below) has a
+    // real "outside" region to catch a click in -- a window sized to just
+    // the popup itself has no such region.
+    anchors { top: true; right: true; bottom: true; left: true }
     color: "transparent"
     focusable: true
     aboveWindows: true
+
+    Cyber.ClickOutside { onOutsideClicked: root.closeRequested() }
 
     // Track EVERY node, not the filtered subset. PwNode.type stays
     // PwNodeType.Untracked (0) until something tracks the node, so filtering
@@ -60,6 +64,7 @@ PanelWindow {
         Text {
             Layout.preferredWidth: 96
             text: row.label
+            textFormat: Text.PlainText
             color: Cyber.Theme.fg
             font { family: Cyber.Theme.fontFamily; pixelSize: Cyber.Theme.fontSize - 1 }
             elide: Text.ElideRight
@@ -104,7 +109,9 @@ PanelWindow {
     }
 
     Rectangle {
-        anchors.fill: parent
+        anchors { top: parent.top; right: parent.right; topMargin: 44; rightMargin: 8 }
+        width: 380
+        height: 480
         radius: Cyber.Theme.radius
         color: Cyber.Theme.bg
         border.width: 1
@@ -112,6 +119,12 @@ PanelWindow {
 
         focus: true
         Keys.onEscapePressed: root.closeRequested()
+
+        // Swallows a click on blank space inside the popup: a plain
+        // Rectangle doesn't itself accept mouse events, so without this a
+        // click here would fall through to Cyber.ClickOutside behind the
+        // whole window and close the popup it landed inside.
+        MouseArea { anchors.fill: parent }
 
         ScrollView {
             id: scroll
@@ -172,6 +185,7 @@ PanelWindow {
                                 Text {
                                     Layout.fillWidth: true
                                     text: root.labelFor(sinkEntry.modelData)
+                                    textFormat: Text.PlainText
                                     color: Cyber.Theme.fg
                                     font { family: Cyber.Theme.fontFamily; pixelSize: Cyber.Theme.fontSize - 1 }
                                     elide: Text.ElideRight

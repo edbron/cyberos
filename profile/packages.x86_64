@@ -30,6 +30,11 @@ pciutils
 htop
 btop
 fastfetch
+# CPU temperature for the System Health bar widget (cyberos-systemhealth-state).
+# Without it the widget still works -- temperature just reads "n/a" -- but a
+# health panel with no temperature reading is a degraded one, not an optional
+# extra, on hardware this project already assumes runs hot under lab load.
+lm_sensors
 unzip
 zip
 7zip
@@ -131,6 +136,11 @@ brightnessctl
 playerctl
 pamixer
 kanshi
+# notify-send (Super+Shift+U touchscreen toggle) posts through the same
+# D-Bus notification pipeline as everything else, landing in the shell's
+# own NotifyPopups bubble instead of a visually inconsistent compositor
+# bezel.
+libnotify
 
 # ---- display manager ----
 sddm
@@ -175,6 +185,25 @@ xdg-utils
 # file manager must never rm a student's work.
 trash-cli
 
+# ---- cloud drives ----
+# Connect iCloud/Google Drive/OneDrive as folders under ~/Cloud (bar chip +
+# popups/CloudDrives.qml, backed by cyberos-cloud-drives). All base packages
+# rather than a runtime install -- consistent with lm_sensors above, and
+# this project's own machines are not guaranteed a network connection at
+# first login the way Omarchy's own omarchy-pkg-add lazy-install assumes.
+rclone
+fuse3
+gum
+libsecret
+# The config-encryption password and (for iCloud) the Apple ID password
+# live only here, never on disk in the clear -- see cyberos-cloud-drives'
+# own header comment. Started at session autostart (hyprland.lua), not
+# PAM-unlocked at login: this project's own lab-machine threat model
+# (shared machines, no single-owner laptop-theft scenario) doesn't carry
+# PAM's added complexity/blast-radius for a marginal benefit against a
+# threat that mostly doesn't apply here.
+gnome-keyring
+
 # ---- virtualization ----
 virtualbox
 virtualbox-host-dkms
@@ -192,8 +221,6 @@ ttf-liberation
 ttf-dejavu
 papirus-icon-theme
 adwaita-cursors
-kvantum
-qt5ct
 qt6ct
 
 # ---- dev basics (for VS Code / Neovim workflows) ----

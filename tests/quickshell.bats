@@ -75,16 +75,67 @@ QMLLINT=/usr/lib/qt6/bin/qmllint
     | tr -d ' \t\n' | grep -q 'Tray{}BluetoothChip{}'
 }
 
-@test "power menu replaces the rofi script with the same four actions" {
+@test "power menu replaces the rofi script, plus sleep/hibernate" {
   [ ! -e "$ROOT/profile/airootfs/etc/skel/.config/rofi/powermenu.sh" ]
   # run-wrapped: a mid-body "!" is exempt from errexit and would be silently
   # swallowed by the loop/grep that follows.
   run grep -q 'powermenu.sh' "$ROOT/profile/profiledef.sh"
   [ "$status" -ne 0 ]
-  for a in hyprlock 'hl.dsp.exit' 'systemctl.*reboot' 'systemctl.*poweroff'; do
+  for a in hyprlock 'systemctl.*suspend' 'hl.dsp.exit' 'systemctl.*reboot' 'systemctl.*poweroff'; do
     grep -qE "$a" "$QS/power/PowerMenu.qml"
   done
   grep -q '"power"' "$QS/shell.qml"   # ipc target
+}
+
+@test "hibernate is offered only when swap can actually hold RAM, checked live not assumed" {
+  f="$QS/power/PowerMenu.qml"
+  grep -q '/proc/meminfo' "$f"
+  grep -q 'MemTotal' "$f"
+  grep -q 'SwapTotal' "$f"
+  # Gate is swap >= mem, not just "swap exists" -- a small swapfile/zram
+  # would silently fail or corrupt state mid-hibernate otherwise.
+  grep -q 'hibernateOk: root.swapKb > 0 && root.swapKb >= root.memKb' "$f"
+  grep -qE 'systemctl.*hibernate' "$f"
+  grep -q 'root.hibernateOk' "$f"
+  implicit=$(grep -c 'height: 20 + root.actions.length \* 50' "$f")
+  [ "$implicit" -eq 1 ]   # row count drives panel height, not a fixed constant
+}
+
+@test "click-outside-to-close: every popup uses Cyber.ClickOutside behind a self-contained content box" {
+  # One shared mechanism (ClickOutside.qml, quickshell root, registered in
+  # qmldir) instead of N copies of the same background MouseArea and the
+  # same "does the content box eat its own clicks" reasoning duplicated
+  # across every popup.
+  grep -q 'ClickOutside ClickOutside.qml' "$QS/qmldir"
+  grep -q 'signal outsideClicked()' "$QS/ClickOutside.qml"
+
+  for f in "$QS/popups/BluetoothPanel.qml" "$QS/popups/WifiPanel.qml" \
+           "$QS/popups/Mixer.qml" "$QS/popups/PowerPanel.qml" \
+           "$QS/popups/MusicFlow.qml" "$QS/popups/SystemHealth.qml" \
+           "$QS/popups/Calc.qml" "$QS/popups/ClipHist.qml" \
+           "$QS/popups/EmojiPicker.qml" "$QS/popups/WinSwitch.qml" \
+           "$QS/power/PowerMenu.qml" "$QS/launcher/Launcher.qml"; do
+    grep -q 'Cyber.ClickOutside {' "$f"
+    grep -q 'onOutsideClicked: root.close' "$f"   # closeRequested() or close()
+    # Content box swallows its own clicks -- without this a click on blank
+    # space inside the popup would fall through to ClickOutside behind it
+    # and close the popup it landed inside.
+    grep -q 'MouseArea { anchors.fill: parent }' "$f"
+    # The content box is explicitly sized/positioned now, not `anchors.fill:
+    # parent` against a window that (for most of these) is fullscreen --
+    # that would silently expand the visible popup to cover the whole screen.
+    grep -qE '^\s+(width: [0-9]+|height: [0-9]+|height: 20 \+ root\.actions\.length)' "$f"
+  done
+}
+
+@test "click-outside-to-close: MusicFlow and SystemHealth stay small (not fullscreen) while closed" {
+  # Both are always-loaded (LazyLoader active: true, never destroyed) --
+  # unlike every other popup here, they cannot simply be fullscreen
+  # unconditionally, or a "closed" panel would sit over the whole desktop
+  # as an invisible click-blocker forever. right/bottom (or left/bottom)
+  # only join top/left (or top/right) once root.opened is true.
+  grep -q 'anchors { top: true; left: true; right: root.opened; bottom: root.opened }' "$QS/popups/MusicFlow.qml"
+  grep -q 'anchors { top: true; right: true; left: root.opened; bottom: root.opened }' "$QS/popups/SystemHealth.qml"
 }
 
 @test "osd handles the five ipc functions and swayosd is gone" {
@@ -126,13 +177,110 @@ QMLLINT=/usr/lib/qt6/bin/qmllint
   ! grep -qE 'rofi -show drun|rofi -show calc' "$ROOT/profile/airootfs/etc/skel/.config/hypr/hyprland.lua"  # calc became a quickshell surface in Task 4; see tests/surfaces2.bats
 }
 
-@test "launcher: centred focusable panel, GridView + filter, noDisplay excluded" {
+@test "launcher: centred focusable panel, ListView + filter, noDisplay excluded" {
   grep -q 'PanelWindow' "$QS/launcher/Launcher.qml"
   grep -q 'focusable: true' "$QS/launcher/Launcher.qml"
-  grep -q 'GridView' "$QS/launcher/Launcher.qml"
+  grep -q 'ListView' "$QS/launcher/Launcher.qml"
   grep -q 'noDisplay' "$QS/launcher/Launcher.qml"
   grep -q 'execute()' "$QS/launcher/Launcher.qml"
   grep -q 'closeRequested' "$QS/launcher/Launcher.qml"
+}
+
+@test "launcher: minimal TUI list -- sharp corners, accent border, app name is plain text" {
+  f="$QS/launcher/Launcher.qml"
+  grep -qE 'radius:\s*0' "$f"
+  grep -qE 'border\.color:\s*Cyber\.Theme\.accent' "$f"
+  grep -q 'ObjectComparison.Identity' "$f"
+  grep -qE 'text: cell\.modelData\.name' "$f"
+  awk '/text: cell\.modelData\.name/,/^ *}/' "$f" | grep -q 'textFormat: Text.PlainText'
+}
+
+@test "launcher: categories switch by keyboard (Left/Right only), not mouse scroll" {
+  f="$QS/launcher/Launcher.qml"
+  grep -q 'function cycleGroup' "$f"
+  grep -qE 'case Qt\.Key_Right:' "$f"
+  grep -qE 'case Qt\.Key_Left:' "$f"
+  grep -q 'root.cycleGroup(1)' "$f"
+  grep -q 'root.cycleGroup(-1)' "$f"
+  # Gated on apps mode -- Left/Right do nothing in files mode, where
+  # there's no category strip to move through.
+  grep -q 'if (root.mode === "apps") { root.cycleGroup(1)' "$f"
+  grep -q 'if (root.mode === "apps") { root.cycleGroup(-1)' "$f"
+  # No wheel/drag path -- catList only moves in response to activeGroup,
+  # driven by the key handler above. "!"-negated commands are exempt from
+  # errexit regardless of position, so this can't just sit ahead of the
+  # next two assertions -- run + an explicit status check instead.
+  run grep -q 'WheelHandler' "$f"
+  [ "$status" -ne 0 ]
+  grep -qE 'interactive:\s*false' "$f"
+  grep -q 'positionViewAtIndex' "$f"
+}
+
+@test "launcher: Tab/Backtab switch apps/files mode, not categories" {
+  f="$QS/launcher/Launcher.qml"
+  grep -q 'property string mode: "apps"' "$f"
+  grep -q 'function setMode' "$f"
+  grep -q 'function toggleMode' "$f"
+  awk '/case Qt\.Key_Tab:/,/break;/' "$f" | grep -q 'root.toggleMode()'
+  awk '/case Qt\.Key_Backtab:/,/break;/' "$f" | grep -q 'root.toggleMode()'
+  # The segmented indicator: both segments present, bracket-highlighted
+  # like the category chips, and clickable via root.setMode.
+  grep -q '"\[Apps\]"' "$f"
+  grep -q '"\[Files\]"' "$f"
+  grep -q 'root.setMode("apps")' "$f"
+  grep -q 'root.setMode("files")' "$f"
+}
+
+@test "launcher: files mode -- fd search is argv-only, fixed-string, bounded, no symlink following" {
+  f="$QS/launcher/Launcher.qml"
+  grep -qE '\["fd", "-i", "-F", "-H", "-a", "-t", "f",' "$f"
+  grep -q '"--max-results", "40"' "$f"
+  # -- before the query: a query starting with '-' is never parsed as a flag.
+  grep -qE '"--", q,' "$f"
+  grep -qE 'root\.usrRoot, root\.etcRoot, root\.varRoot, root\.homeRoot' "$f"
+  grep -q 'usrRoot: "/usr"' "$f"
+  grep -q 'Quickshell.env("HOME")' "$f"
+  # No -L/--follow outside of comments -- fd must not traverse a symlink out
+  # of any search root. Comments stripped first: the explanatory comment
+  # right above this test's own source (and in Launcher.qml itself) says
+  # "No -L/--follow" in prose, which a bare match would misfire on.
+  # "!"-negated commands are exempt from errexit regardless of position, so
+  # this can't just sit ahead of the next assertion -- run + an explicit
+  # status check instead.
+  run bash -c "grep -v '^\s*//' '$f' | grep -qE -- '-L\b|--follow'"
+  [ "$status" -ne 0 ]
+  # Client-side bound too, independent of --max-results.
+  grep -q '.slice(0, 40)' "$f"
+}
+
+@test "launcher: files mode -- scope covers /etc, /var, and hidden dirs under \$HOME (~/.config)" {
+  f="$QS/launcher/Launcher.qml"
+  grep -q 'etcRoot: "/etc"' "$f"
+  grep -q 'varRoot: "/var"' "$f"
+  # -H is what actually reaches ~/.config: fd skips dotdirs without it.
+  grep -qE '\["fd", "-i", "-F", "-H",' "$f"
+  grep -q '/usr, /etc, /var, ~' "$f"
+}
+
+@test "launcher: files mode -- two-char floor, debounced, stale searches can't clobber fresh results" {
+  f="$QS/launcher/Launcher.qml"
+  grep -q 'interval: 150' "$f"
+  grep -q 'fileSearchDebounce.restart()' "$f"
+  grep -q 'q.length < 2' "$f"
+  # Generation guard: each run is tagged, the result handler drops anything
+  # that isn't the current generation.
+  grep -q 'property int searchGen: 0' "$f"
+  grep -q 'property int forGen: -1' "$f"
+  grep -q 'if (fileSearchProc.forGen !== root.searchGen) return;' "$f"
+}
+
+@test "launcher: files mode -- results open via xdg-open, names/paths render as plain text" {
+  f="$QS/launcher/Launcher.qml"
+  grep -q 'Quickshell.execDetached(\["xdg-open", root.fileResults\[index\]\])' "$f"
+  awk '/text: fcell\.baseName/,/^ *}/' "$f" | grep -q 'textFormat: Text.PlainText'
+  awk '/text: fcell\.dirName/,/^ *}/' "$f" | grep -q 'textFormat: Text.PlainText'
+  # A pathological filename elides instead of pushing dirName off the row.
+  grep -q 'Layout.maximumWidth: 180' "$f"
 }
 
 @test "bar: apps chip is the first left module, toggles the launcher" {

@@ -1,0 +1,477 @@
+#!/usr/bin/env python3
+# Gathers CPU / memory / battery / disk-SMART health and prints one JSON
+# blob on stdout. Read-only: no SMART self-tests are started, no sudo.
+# SMART data comes from UDisks2 over D-Bus (busctl), which exposes ATA and
+# NVMe health attributes to unprivileged callers without a polkit prompt.
+
+import glob
+import json
+import os
+import re
+import select
+import subprocess
+import time
+
+# Bounds on how much any single data source can make us buffer, so a
+# pathological/unusual local data source (huge sysfs file, chatty
+# subprocess, a drive that reports an enormous warning list) can't grow
+# the helper's memory or the panel's JSON payload without limit.
+MAX_READ_BYTES = 65536
+MAX_SUBPROCESS_BYTES = 262144
+MAX_DISKS = 16
+MAX_WARNINGS = 16
+MAX_CORES = 256
+MAX_PROC_NAME_LEN = 128
+
+def run(cmd, timeout=4, limit=MAX_SUBPROCESS_BYTES):
+    # Reads the child's stdout via a nonblocking fd with an explicit byte
+    # cap and deadline, instead of subprocess.run(capture_output=True)
+    # buffering the entire output before we get a chance to bound it.
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        return ""
+
+    chunks = []
+    total = 0
+    fd = proc.stdout.fileno()
+    os.set_blocking(fd, False)
+    deadline = time.monotonic() + timeout
+    try:
+        while total < limit:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([fd], [], [], min(0.2, remaining))
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 4096)
+            except BlockingIOError:
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    except Exception:
+        pass
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            pass
+
+    return b"".join(chunks)[:limit].decode("utf-8", "replace")
+
+def read(path, limit=MAX_READ_BYTES):
+    # Nonblocking fd read with an explicit byte cap, so an unusual local
+    # file (special file, unexpectedly huge sysfs/procfs entry) can't
+    # block the helper or make it buffer unbounded data.
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        chunks = []
+        total = 0
+        while total < limit:
+            try:
+                chunk = os.read(fd, min(4096, limit - total))
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        return b"".join(chunks).decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+
+def read_int(path):
+    v = read(path)
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------- battery --
+
+def battery():
+    bases = sorted(glob.glob("/sys/class/power_supply/BAT*"))
+    if not bases:
+        return None
+    base = bases[0]
+
+    capacity = read_int(f"{base}/capacity")
+    status = read(f"{base}/status") or "Unknown"
+    cycle_count = read_int(f"{base}/cycle_count")
+    charge_full = read_int(f"{base}/charge_full")
+    charge_full_design = read_int(f"{base}/charge_full_design")
+    charge_now = read_int(f"{base}/charge_now")
+    voltage_now = read_int(f"{base}/voltage_now")
+    current_now = read_int(f"{base}/current_now")
+
+    wear_percent = None
+    health_label = "Unknown"
+    if charge_full and charge_full_design:
+        wear_percent = round(charge_full / charge_full_design * 100, 1)
+        if wear_percent >= 80:
+            health_label = "Good"
+        elif wear_percent >= 60:
+            health_label = "Fair"
+        else:
+            health_label = "Poor"
+
+    voltage_v = round(voltage_now / 1_000_000, 2) if voltage_now else None
+    current_a = round(current_now / 1_000_000, 2) if current_now else None
+    power_w = round(voltage_v * current_a, 1) if voltage_v and current_a else None
+
+    time_remaining_min = None
+    if current_now and charge_now and current_now > 0:
+        if status == "Discharging":
+            time_remaining_min = round(charge_now / current_now * 60)
+        elif status == "Charging" and charge_full:
+            remaining = max(charge_full - charge_now, 0)
+            time_remaining_min = round(remaining / current_now * 60)
+
+    return {
+        "present": True,
+        "percent": capacity,
+        "status": status,
+        "cycleCount": cycle_count,
+        "wearPercent": wear_percent,
+        "healthLabel": health_label,
+        "designCapacityMah": round(charge_full_design / 1000) if charge_full_design else None,
+        "fullCapacityMah": round(charge_full / 1000) if charge_full else None,
+        "voltageV": voltage_v,
+        "powerW": power_w,
+        "timeRemainingMin": time_remaining_min,
+        "model": read(f"{base}/model_name"),
+        "manufacturer": read(f"{base}/manufacturer"),
+        "technology": read(f"{base}/technology"),
+    }
+
+
+# --------------------------------------------------------------------- cpu --
+
+def read_stat_line():
+    line = read("/proc/stat")
+    times = {}
+    for row in line.splitlines():
+        if row.startswith("cpu"):
+            parts = row.split()
+            times[parts[0]] = [int(x) for x in parts[1:]]
+        else:
+            break
+    return times
+
+def usage_from_deltas(a, b):
+    # user nice system idle iowait irq softirq steal
+    idle_a = a[3] + a[4]
+    idle_b = b[3] + b[4]
+    total_a = sum(a)
+    total_b = sum(b)
+    d_total = total_b - total_a
+    d_idle = idle_b - idle_a
+    if d_total <= 0:
+        return 0.0
+    return round((1 - d_idle / d_total) * 100, 1)
+
+def cpu_temps():
+    out = run(["sensors", "-j"])
+    if not out:
+        return {}
+    try:
+        data = json.loads(out)
+    except Exception:
+        return {}
+    temps = {}
+    for chip, fields in data.items():
+        for label, vals in fields.items():
+            if not isinstance(vals, dict):
+                continue
+            for k, v in vals.items():
+                if k.endswith("_input") and isinstance(v, (int, float)):
+                    temps[f"{chip}:{label}"] = round(v, 1)
+    return temps
+
+def cpu():
+    sample_a = read_stat_line()
+    time.sleep(0.25)
+    sample_b = read_stat_line()
+
+    overall = usage_from_deltas(sample_a["cpu"], sample_b["cpu"]) if "cpu" in sample_a and "cpu" in sample_b else None
+    per_core = []
+    core_keys = sorted((k for k in sample_b if k != "cpu" and k.startswith("cpu")),
+                        key=lambda k: int(k[3:]))[:MAX_CORES]
+    for k in core_keys:
+        if k in sample_a:
+            per_core.append(usage_from_deltas(sample_a[k], sample_b[k]))
+
+    model = ""
+    for row in (read("/proc/cpuinfo") or "").splitlines():
+        if row.startswith("model name"):
+            model = row.split(":", 1)[1].strip()
+            break
+
+    freqs = []
+    for p in sorted(glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq")):
+        v = read_int(p)
+        if v:
+            freqs.append(v // 1000)
+    max_freq = read_int("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq")
+    governor = read("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+
+    load = (read("/proc/loadavg") or "").split()
+    load_avg = [float(x) for x in load[:3]] if len(load) >= 3 else None
+
+    # Label conventions differ by vendor/driver: Intel's coretemp reports
+    # "Package id 0" and "Core N"; AMD's k10temp reports "Tctl" (and "Tdie"
+    # as a fallback on chips without Tctl) plus per-chiplet "Tccd1", "Tccd2".
+    temps = cpu_temps()
+    package_temp = None
+    tdie_temp = None
+    core_temp_max = None
+    for k, v in temps.items():
+        low = k.lower()
+        if "package" in low or "tctl" in low or "composite" in low:
+            package_temp = v if package_temp is None else max(package_temp, v)
+        elif "tdie" in low:
+            tdie_temp = v if tdie_temp is None else max(tdie_temp, v)
+        elif "core" in low or "tccd" in low:
+            core_temp_max = v if core_temp_max is None else max(core_temp_max, v)
+    if package_temp is None:
+        package_temp = tdie_temp
+    if package_temp is None and temps:
+        package_temp = max(temps.values())
+
+    throttled = bool(package_temp and package_temp >= 95)
+
+    return {
+        "model": model,
+        "coreCount": len(core_keys) or None,
+        "usagePercent": overall,
+        "perCorePercent": per_core,
+        "curFreqMhz": round(sum(freqs) / len(freqs)) if freqs else None,
+        "maxFreqMhz": round(max_freq / 1000) if max_freq else None,
+        "governor": governor,
+        "loadAvg": load_avg,
+        "packageTempC": package_temp,
+        "coreTempMaxC": core_temp_max,
+        "throttled": throttled,
+    }
+
+
+# ------------------------------------------------------------------ memory --
+
+def top_processes(sort_key, limit=3):
+    out = run(["ps", "-e", "--no-headers", "-o", "%cpu,%mem,comm", "--sort=-" + sort_key])
+    rows = []
+    for line in out.splitlines()[:limit]:
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        try:
+            cpu_pct = float(parts[0])
+            mem_pct = float(parts[1])
+        except (TypeError, ValueError):
+            continue
+        rows.append({"cpu": cpu_pct, "mem": mem_pct, "name": parts[2][:MAX_PROC_NAME_LEN]})
+    return rows
+
+def memory():
+    info = {}
+    for row in (read("/proc/meminfo") or "").splitlines():
+        m = re.match(r"(\w+):\s+(\d+)", row)
+        if m:
+            info[m.group(1)] = int(m.group(2))
+
+    total = info.get("MemTotal", 0)
+    available = info.get("MemAvailable", 0)
+    free = info.get("MemFree", 0)
+    buffers = info.get("Buffers", 0)
+    cached = info.get("Cached", 0)
+    used = total - available if total and available else None
+
+    swap_total = info.get("SwapTotal", 0)
+    swap_free = info.get("SwapFree", 0)
+    swap_used = swap_total - swap_free
+
+    psi = None
+    psi_raw = read("/proc/pressure/memory")
+    if psi_raw:
+        some = re.search(r"some avg10=([\d.]+) avg60=([\d.]+) avg300=([\d.]+)", psi_raw)
+        full = re.search(r"full avg10=([\d.]+) avg60=([\d.]+) avg300=([\d.]+)", psi_raw)
+        if some and full:
+            psi = {
+                "someAvg10": float(some.group(1)),
+                "someAvg60": float(some.group(2)),
+                "fullAvg10": float(full.group(1)),
+                "fullAvg60": float(full.group(2)),
+            }
+
+    oom_kills = None
+    for row in (read("/proc/vmstat") or "").splitlines():
+        if row.startswith("oom_kill "):
+            oom_kills = int(row.split()[1])
+            break
+
+    return {
+        "totalKb": total,
+        "usedKb": used,
+        "availableKb": available,
+        "freeKb": free,
+        "buffersKb": buffers,
+        "cachedKb": cached,
+        "swapTotalKb": swap_total,
+        "swapUsedKb": swap_used,
+        "psi": psi,
+        "oomKills": oom_kills,
+        "topByMem": top_processes("%mem"),
+    }
+
+
+# ------------------------------------------------------------------- disks --
+
+def busctl_prop(path, iface, prop):
+    out = run(["busctl", "--json=short", "get-property", "org.freedesktop.UDisks2", path, iface, prop])
+    if not out:
+        return None
+    try:
+        return json.loads(out).get("data")
+    except Exception:
+        return None
+
+def busctl_introspect(path):
+    return run(["busctl", "introspect", "org.freedesktop.UDisks2", path])
+
+def smart_update(path, iface):
+    run(["busctl", "call", "org.freedesktop.UDisks2", path, iface, "SmartUpdate", "a{sv}", "0"], timeout=6)
+
+def kelvin_to_c(k):
+    if not isinstance(k, (int, float)):
+        return None
+    return round(k - 273.15, 1)
+
+def disk_health(drive_path):
+    intro = busctl_introspect(drive_path)
+    result = {}
+
+    if "NVMe.Controller" in intro:
+        iface = "org.freedesktop.UDisks2.NVMe.Controller"
+        smart_update(drive_path, iface)
+        warnings = busctl_prop(drive_path, iface, "SmartCriticalWarning")
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings = warnings[:MAX_WARNINGS]
+        temp_k = busctl_prop(drive_path, iface, "SmartTemperature")
+        power_on_hours = busctl_prop(drive_path, iface, "SmartPowerOnHours")
+        if not isinstance(power_on_hours, (int, float)):
+            power_on_hours = None
+        selftest = busctl_prop(drive_path, iface, "SmartSelftestStatus")
+        result = {
+            "kind": "nvme",
+            "healthy": len(warnings) == 0,
+            "warnings": warnings,
+            "temperatureC": kelvin_to_c(temp_k),
+            "powerOnHours": power_on_hours,
+            "selftestStatus": selftest,
+        }
+    elif "Drive.Ata" in intro:
+        iface = "org.freedesktop.UDisks2.Drive.Ata"
+        smart_update(drive_path, iface)
+        failing = busctl_prop(drive_path, iface, "SmartFailing")
+        temp_k = busctl_prop(drive_path, iface, "SmartTemperature")
+        power_on_sec = busctl_prop(drive_path, iface, "SmartPowerOnSeconds")
+        if not isinstance(power_on_sec, (int, float)):
+            power_on_sec = None
+        bad_sectors = busctl_prop(drive_path, iface, "SmartNumBadSectors")
+        attrs_failing = busctl_prop(drive_path, iface, "SmartNumAttributesFailing")
+        selftest = busctl_prop(drive_path, iface, "SmartSelftestStatus")
+        result = {
+            "kind": "ata",
+            "healthy": (failing is False) and (not attrs_failing) and (not bad_sectors),
+            "failing": failing,
+            "badSectors": bad_sectors,
+            "attributesFailing": attrs_failing,
+            "temperatureC": kelvin_to_c(temp_k),
+            "powerOnHours": round(power_on_sec / 3600) if power_on_sec else None,
+            "selftestStatus": selftest,
+        }
+    else:
+        result = {"kind": "unknown", "healthy": None}
+
+    return result
+
+def disks():
+    lsblk_out = run(["lsblk", "-d", "-n", "-o", "NAME,TYPE,SIZE"])
+    entries = []
+    for line in lsblk_out.splitlines():
+        if len(entries) >= MAX_DISKS:
+            break
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            continue
+        name, kind = parts[0], parts[1]
+        size = parts[2] if len(parts) > 2 else ""
+        if kind != "disk":
+            continue
+        if name.startswith("zram") or name.startswith("loop"):
+            continue
+        entries.append((name, size))
+
+    results = []
+    for name, size in entries:
+        info_out = run(["udisksctl", "info", "-b", f"/dev/{name}"])
+        m = re.search(r"Drive:\s+'([^']+)'", info_out)
+        drive_path = m.group(1) if m else None
+
+        entry = {"device": f"/dev/{name}", "size": size}
+        if drive_path and drive_path != "/":
+            entry["model"] = busctl_prop(drive_path, "org.freedesktop.UDisks2.Drive", "Model")
+            rotation = busctl_prop(drive_path, "org.freedesktop.UDisks2.Drive", "RotationRate")
+            entry["mediaType"] = "HDD" if (rotation or 0) > 0 else "SSD/NVMe"
+            entry.update(disk_health(drive_path))
+        else:
+            entry["kind"] = "unknown"
+            entry["healthy"] = None
+        results.append(entry)
+
+    return results
+
+
+def safe(fn, default=None):
+    # Isolate each section so one bad reading (malformed subprocess row,
+    # unexpected D-Bus type, ...) degrades that section instead of
+    # crashing the whole payload.
+    try:
+        return fn()
+    except Exception:
+        return default
+
+def main():
+    print(json.dumps({
+        "battery": safe(battery),
+        "cpu": safe(cpu),
+        "memory": safe(memory),
+        "disks": safe(disks, []),
+    }))
+
+if __name__ == "__main__":
+    main()

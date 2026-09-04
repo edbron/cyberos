@@ -15,13 +15,17 @@ PanelWindow {
 
     signal closeRequested()
 
-    anchors { top: true; right: true }
-    margins { top: 44; right: 8 }
-    implicitWidth: 360
-    implicitHeight: 440
+    // Fullscreen, transparent surface: the visible box below positions
+    // itself via its own anchors/margins instead of the window's, so
+    // Cyber.ClickOutside (this window's first child, right below) has a
+    // real "outside" region to catch a click in -- a window sized to just
+    // the popup itself has no such region.
+    anchors { top: true; right: true; bottom: true; left: true }
     color: "transparent"
     focusable: true
     aboveWindows: true
+
+    Cyber.ClickOutside { onOutsideClicked: root.closeRequested() }
 
     readonly property var wifiDevice: Networking.devices.values.find(d => d.type === DeviceType.Wifi) ?? null
     readonly property var wiredDevice: Networking.devices.values.find(d => d.type === DeviceType.Wired) ?? null
@@ -50,7 +54,9 @@ PanelWindow {
     }
 
     Rectangle {
-        anchors.fill: parent
+        anchors { top: parent.top; right: parent.right; topMargin: 44; rightMargin: 8 }
+        width: 360
+        height: 440
         radius: Cyber.Theme.radius
         color: Cyber.Theme.bg
         border.width: 1
@@ -58,6 +64,12 @@ PanelWindow {
 
         focus: true
         Keys.onEscapePressed: root.closeRequested()
+
+        // Swallows a click on blank space inside the popup: a plain
+        // Rectangle doesn't itself accept mouse events, so without this a
+        // click here would fall through to Cyber.ClickOutside behind the
+        // whole window and close the popup it landed inside.
+        MouseArea { anchors.fill: parent }
 
         ColumnLayout {
             anchors.fill: parent
@@ -123,6 +135,7 @@ PanelWindow {
                             Text {
                                 Layout.fillWidth: true
                                 text: row.modelData.name
+                                textFormat: Text.PlainText
                                 color: row.modelData.connected ? Cyber.Theme.accent : Cyber.Theme.fg
                                 font { family: Cyber.Theme.fontFamily; pixelSize: Cyber.Theme.fontSize }
                                 elide: Text.ElideRight
