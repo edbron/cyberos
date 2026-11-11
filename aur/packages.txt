@@ -4,3 +4,8 @@ pixie-sddm-git
 visual-studio-code-bin
 onlyoffice-bin
 #packettracer   # re-enable once CiscoPacketTracer_*.deb is in aur/
+# Native Omarchy theming tool (github.com/bjarneo/aether): lets a student pick
+# from built-in colour presets (Dracula, Nord, Gruvbox, Catppuccin, ...) or
+# generate a palette from their own wallpaper, independent of cyberos-theme's
+# own light/dark toggle. Standalone, no Omarchy dependency.
+aether

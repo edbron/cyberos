@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  cyberos-install — copy the running CyberOS live system to a disk.
+#  cyberos-install: copy the running CyberOS live system to a disk.
 #
 #  The installed machine ends up IDENTICAL to the live ISO (same packages,
 #  same theme), minus the live-only bits (autologin, archiso initramfs hooks).
@@ -215,6 +215,46 @@ get_live_medium() {
   fi
 }
 
+# disk_has_mount <disk> -- true if <disk> itself, one of its partitions, or a
+# dm-crypt/LUKS mapper device stacked on one of those partitions is currently
+# mounted. Goes through lsblk's own device-dependency walk rather than
+# grepping /proc/mounts by device path: a mapper device's mount source is
+# /dev/mapper/<name>, never the partition path underneath it, so a raw
+# regex against the partition's own name misses a previous *encrypted*
+# CyberOS install left unlocked and mounted.
+disk_has_mount() {
+  lsblk -pnro MOUNTPOINT "$1" 2>/dev/null | grep -q .
+}
+
+# is_whole_disk <path> -- true if <path> is a whole disk, not a partition.
+# The interactive wizard only ever offers whole disks and separately checks
+# -b on a free-typed path (see the disk-selection loop above); the
+# unattended `--disk` path had no such check at all before this, so a typo
+# like --disk /dev/sda1 would run wipefs/sgdisk -Z against a partition.
+is_whole_disk() {
+  [[ $(lsblk -dno TYPE "$1" 2>/dev/null) == disk ]]
+}
+
+# A disk carrying a previous CyberOS install (recognizable CYBEROS/CYBEROS_EFI
+# labels from the mkfs calls below) is exactly what this project's own
+# udisks2 auto-mount picks up as soon as the live session starts. wipefs/
+# sgdisk -Z then fail with a raw kernel I/O error, not a clear message, if
+# any of the target disk's own partitions are still mounted -- swapoff -a
+# alone only handles swap, not a mounted filesystem. Returns non-zero, with
+# a message on stderr, if disk_has_mount still finds something mounted once
+# every unmount attempt below has run: silently pressing on into wipefs was
+# the original bug, not just the missing unmount call.
+unmount_disk() {
+  local disk=$1 p
+  for p in $(lsblk -pnro NAME "$disk" 2>/dev/null | tail -n +2); do
+    umount -R "$p" 2>/dev/null || true
+  done
+  if disk_has_mount "$disk"; then
+    echo "unmount_disk: $disk still has a mounted partition after unmount attempts" >&2
+    return 1
+  fi
+}
+
 get_free_space_gib() {
   local disk=$1 first last
   if command -v sgdisk >/dev/null 2>&1; then
@@ -272,7 +312,7 @@ render_banner() {
        |___/                             
 BANNER
   printf "${C_RESET}"
-  printf "${C_CYAN}  CyberOS Interactive Installer${C_RESET} ${C_DIM}— Arch Linux with Hyprland & Quickshell${C_RESET}\n"
+  printf "${C_CYAN}  CyberOS Interactive Installer${C_RESET} ${C_DIM}(Arch Linux with Hyprland & Quickshell)${C_RESET}\n"
   printf "${C_GRAY}  ────────────────────────────────────────────────────────────────────────${C_RESET}\n\n"
 }
 
@@ -574,6 +614,7 @@ fi
 
 # Validation for unattended runs
 [[ -n $DISK ]] || die "--disk <device> is required"
+is_whole_disk "$DISK" || die "$DISK is not a whole disk (got a partition or missing device)"
 [[ -n $PASS ]] || die "--password or --password-stdin is required"
 ROOTPASS=${ROOTPASS:-$PASS}
 [[ -f /usr/share/zoneinfo/$TZ_ ]] || die "unknown timezone $TZ_"
@@ -590,10 +631,10 @@ if [[ $DRY_RUN -eq 0 ]]; then
   if [[ $MODE == manual ]]; then
     [[ -b ${ROOTP:-/nonexistent} ]] || die "--root <partition> is required for manual mode"
     [[ $UEFI -eq 0 || -b ${EFIP:-/nonexistent} ]] || die "--efi <partition> is required on UEFI systems"
-    for p_ in $ROOTP $EFIP $HOMEP; do grep -q "^$p_ " /proc/mounts && die "$p_ is mounted — unmount it first"; done
+    for p_ in $ROOTP $EFIP $HOMEP; do grep -q "^$p_ " /proc/mounts && die "$p_ is mounted -- unmount it first"; done
     [[ $ROOTP != "$EFIP" && $ROOTP != "$HOMEP" ]] || die "root/efi/home must be different partitions"
   else
-    grep -q "^$DISK" /proc/mounts 2>/dev/null && die "$DISK is mounted — unmount it first"
+    disk_has_mount "$DISK" && die "$DISK is mounted -- unmount it first"
   fi
 fi
 
@@ -608,6 +649,7 @@ fi
 #  INSTALLATION EXECUTION
 # ============================================================================
 swapoff -a 2>/dev/null || true
+unmount_disk "$DISK" || die "$DISK still has a mounted partition after unmount attempts -- unmount it manually and retry"
 
 # ---------------------------------------------------------------- Step 1: Partition
 if [[ $MODE == erase ]]; then
@@ -703,7 +745,7 @@ printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s\n' "$HOSTNAME_" > /mnt/
 rm -f /mnt/etc/resolv.conf; touch /mnt/etc/resolv.conf
 printf 'CyberOS \\r (\\l)\n\n' > /mnt/etc/issue
 cat > /mnt/etc/motd <<'MOTD'
-  CyberOS — Cyber Department. Type `fastfetch` for system info.
+  CyberOS, Cyber Department. Type `fastfetch` for system info.
 MOTD
 
 cat > /mnt/etc/mkinitcpio.d/linux.preset <<'PRESET'

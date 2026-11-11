@@ -33,7 +33,10 @@ pkg_listed() {
 @test "headless Qt services and CLI tooling the QML surfaces need are present" {
   # portal-kde is the FileChooser backend for firefox/code (no window, no
   # KDE app); udisks2 mounts removable media; both are daemons, not apps.
-  for p in xdg-desktop-portal-kde udisks2 adwaita-cursors xdg-utils trash-cli 7zip unzip; do
+  # fd backs the launcher's files-mode search (tests/quickshell.bats).
+  # libnotify backs cyberos-toggle-touchscreen's notify-send feedback
+  # (tests/touchscreen.bats).
+  for p in xdg-desktop-portal-kde udisks2 adwaita-cursors xdg-utils trash-cli 7zip unzip fd libnotify; do
     pkg_listed "$p"
   done
 }

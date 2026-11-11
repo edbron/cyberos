@@ -1,0 +1,219 @@
+#!/bin/bash
+# Arrange an external monitor around the internal one, and set refresh rates.
+#
+#   cyberos-monitor-arrange state                                  JSON state for the panel
+#   cyberos-monitor-arrange <left|right|top|bottom> [EXTERNAL] [--dry-run]
+#   cyberos-monitor-arrange rate <MONITOR> <HZ> [--dry-run]
+#
+# Changes are applied live with `hyprctl eval "hl.monitor({...})"` (CyberOS's
+# Hyprland config is Lua, not .conf -- see hyprland.lua's own header) and
+# persisted in a marked block at the end of ~/.config/hypr/monitors.lua so
+# they survive reboots; hyprland.lua dofiles that file back in on every
+# reload. Only the marked block is ever rewritten; the rest of the file is
+# the user's own.
+#
+# Rules are keyed by monitor description (`desc:BOE NE160WUM-NXA`), not by
+# connector name: names like eDP-2 / DP-2 can change between boots when the
+# kernel enumerates GPUs in a different order, and a rule for a name that no
+# longer exists silently falls back to automatic placement.
+#
+# Ported from github.com/edbron/omarchy-monitor-placement-refresh-rate's
+# bin/omarchy-monitor-arrange (same structure and jq-driven JSON handling,
+# no shell string concatenation anywhere) with one hardening change: monitor
+# `description` comes from the connected display's own EDID, which on a lab
+# machine can mean a student's own external monitor or dongle -- content
+# this project does not control. It goes into a Hyprland Lua string literal
+# below (`output = "desc:<description>"`), so a description containing a raw
+# control character (a newline, most importantly) could break out of that
+# literal and inject arbitrary Lua into `hyprctl eval`, which is a real code
+# execution surface (see hyprland.lua's own `hl.dsp.exec_cmd` keybinds).
+# Rejected outright rather than escaped, mirroring
+# cyberos-toggle-touchscreen's own has_control_chars on a USB device name.
+set -euo pipefail
+
+MONITORS_LUA="${CYBEROS_MONITORS_LUA:-$HOME/.config/hypr/monitors.lua}"
+BEGIN_MARK="-- cyberos-monitor-arrange: begin (managed; edit via the Arrange panel)"
+END_MARK="-- cyberos-monitor-arrange: end"
+
+fail() { echo "cyberos-monitor-arrange: $*" >&2; exit 1; }
+
+has_control_chars() {
+  [[ $1 == *[[:cntrl:]]* ]]
+}
+
+# hyprctl reports physical width/height; the layout works in logical pixels,
+# which is what Hyprland uses for positions. Swap for 90/270 transforms.
+# `rates` lists the refresh rates available at the monitor's current resolution,
+# rounded to whole Hz: Hyprland matches a requested rate to the nearest mode
+# within 1 Hz, so 59.94 and 60.00 are the same choice as far as it is concerned.
+monitors_json() {
+  hyprctl monitors all -j | jq -c '
+    def internal: test("^(eDP|LVDS|DSI)-");
+    def hz: (. * 100 | round) / 100;
+    [ .[] | select(.disabled != true) | {
+        name, description, focused: (.focused == true),
+        internal: (.name | internal),
+        width, height, scale, transform, x, y,
+        refreshRate: (.refreshRate | hz),
+        lw: (if (.transform % 2) == 1 then (.height / .scale) else (.width / .scale) end | round),
+        lh: (if (.transform % 2) == 1 then (.width / .scale) else (.height / .scale) end | round),
+        rates: ( "\(.width)x\(.height)@" as $prefix
+               | [ .availableModes[] | select(startswith($prefix))
+                   | sub("^.*@"; "") | sub("Hz$"; "") | tonumber | round ]
+               | unique | reverse )
+    } ]'
+}
+
+state() {
+  local all int
+  all=$(monitors_json)
+  int=$(jq -c '[.[] | select(.internal)][0] // .[0] // empty' <<<"$all")
+  [[ -n $int ]] || { echo '{"internal":null,"monitors":[],"externals":[]}'; return; }
+  jq -c --argjson i "$int" '
+    { internal: $i.name,
+      monitors: [ .[] | {name, internal, focused, refreshRate, rates} ],
+      externals: [ .[] | select(.name != $i.name) | . as $e | {
+        name, description, focused, lw, lh,
+        placement: (
+          if ($e.x + $e.lw) <= $i.x then "left"
+          elif $e.x >= ($i.x + $i.lw) then "right"
+          elif ($e.y + $e.lh) <= $i.y then "top"
+          elif $e.y >= ($i.y + $i.lh) then "bottom"
+          else "" end)
+      } ] }' <<<"$all"
+}
+
+# Builds one `hl.monitor({...})` Lua call for a monitor's current JSON. The
+# description is validated (see the header comment) before it ever reaches
+# jq's own string interpolation, which already applies correct JSON/Lua
+# backslash-and-quote escaping to whatever survives that check.
+lua_for() {
+  local desc
+  desc=$(jq -r .description <<<"$1")
+  has_control_chars "$desc" && fail "monitor description contains a control character, refusing to build a Hyprland rule from it"
+  jq -r '"hl.monitor({ output = \"desc:\(.description)\", mode = \"\(.width)x\(.height)@\(.refreshRate)\", position = \"\(.x)x\(.y)\", scale = \(.scale), transform = \(.transform) })"' <<<"$1"
+}
+
+# Existing lines of the managed block, verbatim.
+managed_lines() {
+  [[ -f $MONITORS_LUA ]] || return 0
+  awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+    $0 == b { inblk = 1; next }
+    $0 == e { inblk = 0; next }
+    inblk' "$MONITORS_LUA"
+}
+
+# Rewrite the managed block. Every existing line whose monitor is connected is
+# regenerated from $LIVE (callers patch $LIVE with the intended change first:
+# reading hyprctl back here would race the mode switch). Lines for monitors
+# that are not connected right now are kept as they are, so unplugging a
+# display does not forget its layout. Legacy lines keyed by connector name are
+# converted to desc: when that name is present, and dropped otherwise -- a
+# name that is gone may never come back under that name.
+LIVE=""
+persist() {
+  local all="$LIVE" tmp block="" line key mon
+  local -A done=()
+
+  emit() {  # $1 = monitor json
+    local d; d=$(jq -r .description <<<"$1")
+    [[ -n ${done[$d]:-} ]] && return
+    done[$d]=1
+    block+="$(lua_for "$1")"$'\n'
+  }
+
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    key=$(sed -n 's/.*output = "\([^"]*\)".*/\1/p' <<<"$line")
+    if [[ $key == desc:* ]]; then
+      mon=$(jq -c --arg d "${key#desc:}" '[.[] | select(.description == $d)][0] // empty' <<<"$all")
+      if [[ -n $mon ]]; then emit "$mon"; else block+="$line"$'\n'; fi
+    else
+      mon=$(jq -c --arg n "$key" '[.[] | select(.name == $n)][0] // empty' <<<"$all")
+      [[ -n $mon ]] && emit "$mon"
+    fi
+  done < <(managed_lines)
+
+  local name
+  for name in "$@"; do
+    mon=$(jq -c --arg n "$name" '[.[] | select(.name == $n)][0] // empty' <<<"$all")
+    [[ -n $mon ]] && emit "$mon"
+  done
+
+  mkdir -p "$(dirname "$MONITORS_LUA")"
+  touch "$MONITORS_LUA"
+  tmp=$(mktemp)
+  awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+    $0 == b { skip = 1; next }
+    $0 == e { skip = 0; next }
+    !skip' "$MONITORS_LUA" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' >"$tmp"
+  printf '\n%s\n%s%s\n' "$BEGIN_MARK" "$block" "$END_MARK" >>"$tmp"
+  mv "$tmp" "$MONITORS_LUA"
+}
+
+arrange() {
+  local dir="$1" target="${2:-}" dry="${3:-}"
+  local all int ext
+  all=$(monitors_json)
+  int=$(jq -c '[.[] | select(.internal)][0] // .[0] // empty' <<<"$all")
+  [[ -n $int ]] || fail "no monitors found"
+  if [[ -n $target ]]; then
+    ext=$(jq -c --arg n "$target" '[.[] | select(.name == $n)][0] // empty' <<<"$all")
+    [[ -n $ext ]] || fail "monitor '$target' is not connected/enabled"
+  else
+    ext=$(jq -c --argjson i "$int" '[.[] | select(.name != $i.name)][0] // empty' <<<"$all")
+    [[ -n $ext ]] || fail "no external monitor connected"
+  fi
+  [[ $(jq -r .name <<<"$ext") != $(jq -r .name <<<"$int") ]] || fail "cannot arrange a monitor relative to itself"
+
+  # Anchor the internal monitor at the origin so positions are deterministic
+  # across reboots, then place the external relative to it.
+  local ilw ilh elw elh ex ey
+  ilw=$(jq -r .lw <<<"$int"); ilh=$(jq -r .lh <<<"$int")
+  elw=$(jq -r .lw <<<"$ext"); elh=$(jq -r .lh <<<"$ext")
+  case $dir in
+    left)   ex=$(( -elw )); ey=0 ;;
+    right)  ex=$ilw;        ey=0 ;;
+    top)    ex=0; ey=$(( -elh )) ;;
+    bottom) ex=0; ey=$ilh ;;
+    *) fail "direction must be left, right, top, or bottom" ;;
+  esac
+  int=$(jq -c '.x = 0 | .y = 0' <<<"$int")
+  ext=$(jq -c --argjson x "$ex" --argjson y "$ey" '.x = $x | .y = $y' <<<"$ext")
+  LIVE=$(jq -c --argjson i "$int" --argjson e "$ext" 'map(if .name == $i.name then $i elif .name == $e.name then $e else . end)' <<<"$all")
+
+  local ilua elua
+  ilua=$(lua_for "$int"); elua=$(lua_for "$ext")
+  if [[ $dry == "--dry-run" ]]; then printf '%s\n%s\n' "$ilua" "$elua"; return; fi
+  hyprctl eval "$ilua $elua" >/dev/null
+  persist "$(jq -r .name <<<"$int")" "$(jq -r .name <<<"$ext")"
+  echo "$(jq -r .name <<<"$ext") placed $dir of $(jq -r .name <<<"$int")"
+}
+
+set_rate() {
+  local name="${1:-}" hz="${2:-}" dry="${3:-}"
+  [[ -n $name && -n $hz ]] || fail "usage: rate <MONITOR> <HZ>"
+  [[ $hz =~ ^[0-9]+([.][0-9]+)?$ ]] || fail "refresh rate must be a number, got '$hz'"
+  local mon
+  mon=$(monitors_json | jq -c --arg n "$name" '[.[] | select(.name == $n)][0] // empty')
+  [[ -n $mon ]] || fail "monitor '$name' is not connected/enabled"
+  jq -e --argjson hz "$hz" '.rates | index($hz) != null' <<<"$mon" >/dev/null ||
+    fail "$name does not offer ${hz}Hz at its current resolution (available: $(jq -r '.rates | join(" ")' <<<"$mon"))"
+  mon=$(jq -c --argjson hz "$hz" '.refreshRate = $hz' <<<"$mon")
+  LIVE=$(monitors_json | jq -c --argjson m "$mon" 'map(if .name == $m.name then $m else . end)')
+  local lua
+  lua=$(lua_for "$mon")
+  if [[ $dry == "--dry-run" ]]; then echo "$lua"; return; fi
+  hyprctl eval "$lua" >/dev/null
+  persist "$name"
+  echo "$name set to ${hz}Hz"
+}
+
+case "${1:-}" in
+  state) state ;;
+  left|right|top|bottom)
+    if [[ ${2:-} == "--dry-run" ]]; then arrange "$1" "" --dry-run; else arrange "$1" "${2:-}" "${3:-}"; fi ;;
+  rate) set_rate "${2:-}" "${3:-}" "${4:-}" ;;
+  -h|--help|"") sed -n '3,17p' "$0" ;;
+  *) fail "unknown command: $1" ;;
+esac

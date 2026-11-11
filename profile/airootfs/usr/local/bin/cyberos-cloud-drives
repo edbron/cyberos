@@ -1,0 +1,400 @@
+#!/bin/bash
+# Connect iCloud Drive, Google Drive and OneDrive as folders under ~/Cloud.
+#
+#   cyberos-cloud-drives state                 JSON state for the panel
+#   cyberos-cloud-drives setup                 encrypt config, install mount unit
+#   cyberos-cloud-drives connect <provider>    interactive: sign in and mount
+#   cyberos-cloud-drives disconnect <provider> interactive: unmount and forget the account
+#   cyberos-cloud-drives mount|unmount <provider>
+#   cyberos-cloud-drives open <provider>       open the folder in the file manager
+#   cyberos-cloud-drives launch <cmd...>       run a subcommand in a floating terminal
+#
+# Providers: google, onedrive, icloud.
+#
+# Security model
+#   * rclone's config file (which holds OAuth refresh tokens / the iCloud
+#     session) is encrypted by rclone. The encryption password is a random
+#     256-bit secret stored only in the login keyring (gnome-keyring via
+#     libsecret) and handed to rclone with --password-command; it is never
+#     written to disk in the clear or exported as a variable.
+#   * Google/OneDrive use OAuth in your browser; this script never sees the
+#     account password. iCloud has no OAuth: rclone needs your Apple ID
+#     password once (obscured into the encrypted config) plus a 2FA code.
+#     The password is handed to rclone over a private unix socket (rclone's
+#     rc API) so it never appears in any process's argv, environment, logs
+#     or temporary files. Consider an app-specific password.
+#   * Mounts are private to your user (umask 077, no allow-other) and run as
+#     hardened systemd user units.
+#
+# Ported from github.com/edbron/omarchy-cloud-drives's bin/omarchy-cloud-drives.
+# Functionally identical (same file-integrity helpers, same secret-handling
+# design, reviewed in full and found already sound) except:
+#   * rclone/fuse3/gum/libsecret/gnome-keyring are base packages on this
+#     project's own image (packages.x86_64), not lazy-installed via
+#     Omarchy's own omarchy-pkg-add -- ensure_rclone below just checks.
+#   * cmd_open used `uwsm-app` (Omarchy's session-manager app launcher,
+#     not present here) to open the file manager; plain `xdg-open`, same
+#     as every other file-open in this shell, does the same job.
+#   * cmd_launch used omarchy-launch-floating-terminal-with-presentation
+#     (not present here); replaced with this project's own
+#     foot --app-id=cyberos-cloud-drives pattern (see cyberos-install-gui
+#     and hyprland.lua's matching float-cloud-drives window_rule).
+#   * The systemd user unit is generated inline (write_file, same
+#     rename(2)-atomic helper as everything else this script writes)
+#     instead of copied from a bundled plugin directory, since this
+#     project ships one flat script rather than a per-plugin bundle.
+set -euo pipefail
+
+PLUGIN_NAME="cyberos-cloud-drives"
+MOUNT_ROOT="${CYBEROS_CLOUD_ROOT:-$HOME/Cloud}"
+UNIT_DIR="$HOME/.config/systemd/user"
+UNIT_NAME="cyberos-cloud-drive@"
+ENV_FILE="$HOME/.config/environment.d/60-cyberos-cloud-drives.conf"
+
+SECRET_ATTRS=(service cyberos-cloud-drives key config-password)
+export RCLONE_PASSWORD_COMMAND="secret-tool lookup ${SECRET_ATTRS[*]}"
+export RCLONE_CONFIG="${RCLONE_CONFIG:-$HOME/.config/rclone/rclone.conf}"
+
+# id | rclone remote name (= folder name under ~/Cloud) | backend | display name | glyph
+PROVIDERS=(
+  "google|GoogleDrive|drive|Google Drive|"$'\U000f02b6'
+  "onedrive|OneDrive|onedrive|OneDrive|"$'\U000f03ca'
+  "icloud|iCloudDrive|iclouddrive|iCloud Drive|"$'\U000f0038'
+)
+
+fail() { echo "cyberos-cloud-drives: $*" >&2; exit 1; }
+
+# write_file <dest> <mode>  (content on stdin)
+# Files under the user's config are written to a securely created temporary
+# file in the destination directory and moved into place with rename(2).
+# rename() is atomic and never follows symlinks, so a planted symlink at the
+# destination is replaced, not written through, and there is no check/open race.
+write_file() {
+  local dest="$1" mode="$2" dir tmp
+  dir="$(dirname "$dest")"
+  mkdir -p -m 0700 "$dir"
+  tmp="$(mktemp "$dir/.$(basename "$dest").XXXXXX")" || fail "cannot create temp file in $dir"
+  if ! cat >"$tmp" || ! chmod "$mode" "$tmp" || ! mv -T -f "$tmp" "$dest"; then
+    rm -f "$tmp"
+    fail "cannot write $dest"
+  fi
+}
+
+# create_private_file <path>: create an empty 0600 regular file only if
+# nothing exists at <path> (link(2) fails on any existing entry, symlinks
+# included, so nothing else can be clobbered or written through).
+create_private_file() {
+  local dest="$1" dir tmp
+  dir="$(dirname "$dest")"
+  mkdir -p -m 0700 "$dir"
+  tmp="$(mktemp "$dir/.$(basename "$dest").XXXXXX")" || fail "cannot create temp file in $dir"
+  chmod 0600 "$tmp"
+  ln "$tmp" "$dest" 2>/dev/null || true
+  rm -f "$tmp"
+  [[ -f $dest && ! -L $dest ]] || fail "$dest exists but is not a regular file"
+}
+
+provider_field() { # provider_field <id> <n>
+  local row
+  for row in "${PROVIDERS[@]}"; do
+    [[ "${row%%|*}" == "$1" ]] && { cut -d'|' -f"$2" <<<"$row"; return; }
+  done
+  fail "unknown provider '$1' (google, onedrive, icloud)"
+}
+remote_of()  { provider_field "$1" 2; }
+backend_of() { provider_field "$1" 3; }
+name_of()    { provider_field "$1" 4; }
+
+have_rclone()  { command -v rclone >/dev/null; }
+have_secret()  { secret-tool lookup "${SECRET_ATTRS[@]}" >/dev/null 2>&1; }
+is_mounted()   { mountpoint -q "$MOUNT_ROOT/$1"; }
+unit_of()      { echo "${UNIT_NAME}$(remote_of "$1").service"; }
+remotes()      { have_rclone && rclone listremotes 2>/dev/null | sed 's/:$//' || true; }
+configured()   { remotes | grep -qx "$(remote_of "$1")"; }
+config_encrypted() { have_rclone && [[ -f $RCLONE_CONFIG ]] && rclone config encryption check >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------------------
+cmd_state() {
+  local remote_list; remote_list="$(remotes)"
+  local rows=() row id remote name glyph conf mounted active
+  for row in "${PROVIDERS[@]}"; do
+    IFS='|' read -r id remote _ name glyph <<<"$row"
+    conf=false; grep -qx "$remote" <<<"$remote_list" && conf=true
+    mounted=false; mountpoint -q "$MOUNT_ROOT/$remote" 2>/dev/null && mounted=true
+    active=false; systemctl --user is-active --quiet "${UNIT_NAME}${remote}.service" 2>/dev/null && active=true
+    rows+=("$(jq -nc --arg id "$id" --arg remote "$remote" --arg name "$name" --arg glyph "$glyph" \
+      --arg path "$MOUNT_ROOT/$remote" --argjson configured "$conf" --argjson mounted "$mounted" --argjson active "$active" \
+      '{id:$id,remote:$remote,name:$name,glyph:$glyph,path:$path,configured:$configured,mounted:$mounted,active:$active}')")
+  done
+  local rc=false enc=false key=false
+  have_rclone && rc=true
+  config_encrypted && enc=true
+  have_secret && key=true
+  jq -nc --argjson rclone "$rc" --argjson encrypted "$enc" --argjson keyring "$key" --arg root "$MOUNT_ROOT" \
+    --argjson providers "$(printf '%s\n' "${rows[@]}" | jq -sc .)" \
+    '{rclone:$rclone,encrypted:$encrypted,keyring:$keyring,root:$root,providers:$providers}'
+}
+
+# ---------------------------------------------------------------------------
+ensure_rclone() {
+  have_rclone && command -v fusermount3 >/dev/null ||
+    fail "rclone/fuse3 not found -- both should be base packages on this image"
+}
+
+ensure_secret() {
+  have_secret && return
+  echo "Creating a config encryption key in your login keyring..."
+  # 256 bits of randomness; never printed, never stored outside the keyring.
+  head -c 32 /dev/urandom | base64 -w0 \
+    | secret-tool store --label="CyberOS Cloud Drives: rclone config password" "${SECRET_ATTRS[@]}"
+  have_secret || fail "could not store the key in the keyring (is gnome-keyring running?)"
+}
+
+ensure_encrypted() {
+  create_private_file "$RCLONE_CONFIG"
+  config_encrypted && return
+  echo "Encrypting the rclone config with the keyring key..."
+  # With --password-command set, `encryption set` takes the NEW password from it.
+  rclone config encryption set
+  config_encrypted || fail "config encryption failed"
+}
+
+# Systemd unit is generated here rather than copied from a bundled plugin
+# directory (see this script's own header for why); content is otherwise
+# the plugin's own, unchanged including its sandboxing-tradeoff comments.
+ensure_unit() {
+  mkdir -p -m 0700 "$MOUNT_ROOT"
+  [[ -d $MOUNT_ROOT && ! -L $MOUNT_ROOT ]] || fail "$MOUNT_ROOT is not a directory"
+  write_file "$UNIT_DIR/${UNIT_NAME}.service" 0644 <<UNIT
+[Unit]
+Description=CyberOS cloud drive mount (%i)
+After=network-online.target graphical-session.target
+Wants=network-online.target
+# The config password lives in the login keyring; without a session bus we
+# cannot read it, so stay attached to the graphical session.
+PartOf=graphical-session.target
+
+[Service]
+Type=notify
+# rclone reads the encrypted config through the keyring, never from an env var.
+Environment=RCLONE_PASSWORD_COMMAND="secret-tool lookup ${SECRET_ATTRS[*]}"
+Environment=RCLONE_CONFIG=%h/.config/rclone/rclone.conf
+ExecStartPre=/usr/bin/mkdir -p -m 0700 %h/Cloud/%i %h/.cache/rclone
+ExecStart=/usr/bin/rclone mount %i: %h/Cloud/%i \\
+  --vfs-cache-mode full \\
+  --vfs-cache-max-size 4G \\
+  --vfs-cache-max-age 72h \\
+  --dir-cache-time 30s \\
+  --poll-interval 15s \\
+  --umask 077 \\
+  --allow-other=false \\
+  --log-level NOTICE
+ExecStop=/usr/bin/fusermount3 -uz %h/Cloud/%i
+Restart=on-failure
+RestartSec=10
+UMask=0077
+# fusermount3 is setuid root, so NoNewPrivileges/RestrictSUIDSGID would break
+# the mount. Unprivileged FUSE is the security boundary here instead.
+# No mount-namespace sandboxing (PrivateTmp, ProtectSystem/Home/Kernel*/ControlGroups):
+# each of those puts the service in a private mount namespace, where fusermount3
+# refuses to mount and the FUSE mount would be invisible to the session anyway.
+# Nor seccomp options (LockPersonality, RestrictRealtime, SystemCallFilter...):
+# for user services they imply no_new_privs, which also breaks fusermount3.
+
+[Install]
+WantedBy=graphical-session.target
+UNIT
+  # So `rclone` in your own terminal can also read the encrypted config.
+  printf 'RCLONE_PASSWORD_COMMAND="%s"\n' "$RCLONE_PASSWORD_COMMAND" | write_file "$ENV_FILE" 0644
+  systemctl --user daemon-reload
+}
+
+cmd_setup() {
+  ensure_rclone
+  ensure_secret
+  ensure_encrypted
+  ensure_unit
+  echo "Cloud Drives is ready. Folders will appear under $MOUNT_ROOT"
+}
+
+# ---------------------------------------------------------------------------
+# Secrets must never be visible in argv (/proc/*/cmdline is world-readable).
+# rclone's CLI only takes remote parameters on the command line, so for
+# password-based backends we talk to rclone's rc API over a private unix
+# socket instead: the request body is built by jq from stdin and streamed
+# to curl from stdin, so the password only ever lives in this shell's
+# memory and in rclone's. The socket lives in a 0700 tmpfs directory for
+# the duration of the sign-in only.
+RC_DIR=""; RC_PID=""
+rc_start() {
+  local run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  RC_DIR="$(umask 077; mktemp -d "$run/cyberos-cloud-drives.XXXXXX")" || fail "cannot create private socket dir"
+  ( umask 077; exec rclone rcd --rc-addr "unix://$RC_DIR/rc.sock" --rc-no-auth --rc-serve=false -q 2>/dev/null ) &
+  RC_PID=$!
+  local i
+  for i in $(seq 50); do [[ -S $RC_DIR/rc.sock ]] && return 0; sleep 0.1; done
+  rc_stop; fail "rclone rc did not start"
+}
+rc_stop() {
+  if [[ -n $RC_PID ]]; then kill "$RC_PID" 2>/dev/null || true; wait "$RC_PID" 2>/dev/null || true; RC_PID=""; fi
+  if [[ -n $RC_DIR ]]; then rm -rf "$RC_DIR"; RC_DIR=""; fi
+  return 0
+}
+rc_call() {  # rc_call <path>, JSON body on stdin, JSON reply on stdout
+  curl -s --fail-with-body --unix-socket "$RC_DIR/rc.sock" -X POST \
+    -H 'Content-Type: application/json' --data-binary @- "http://rc/$1"
+}
+# Sign in to iCloud non-interactively: create the remote with the password in
+# the request body, then answer rclone's follow-up questions (the 2FA code).
+rc_configure_icloud() {  # <remote> <apple_id> <password>
+  local remote="$1" reply state opt_name opt_help answer
+  rc_start
+  trap rc_stop EXIT
+  reply="$(printf '%s\n%s\n' "$2" "$3" | jq -Rn --arg name "$remote" \
+    '[inputs] | {name:$name, type:"iclouddrive",
+      parameters:{apple_id:.[0], password:.[1]},
+      opt:{obscure:true, nonInteractive:true}}' | rc_call config/create)" || {
+    echo "iCloud sign-in failed: $(jq -r '.error // "unknown error"' <<<"$reply")" >&2
+    rc_stop; return 1; }
+  while :; do
+    state="$(jq -r '.State // ""' <<<"$reply")"
+    if [[ -n "$(jq -r '.Error // ""' <<<"$reply")" ]]; then
+      echo "iCloud sign-in failed: $(jq -r .Error <<<"$reply")" >&2; rc_stop; return 1
+    fi
+    [[ -n $state ]] || break
+    opt_name="$(jq -r '.Option.Name // ""' <<<"$reply")"
+    opt_help="$(jq -r '.Option.Help // ""' <<<"$reply")"
+    [[ -n $opt_help ]] && echo "$opt_help"
+    if [[ $opt_name == *2fa* || $opt_name == *code* ]]; then
+      answer="$(gum input --placeholder "2FA code")"
+    else
+      answer="$(gum input --placeholder "${opt_name:-answer}")"
+    fi
+    reply="$(printf '%s\n%s\n' "$state" "$answer" | jq -Rn --arg name "$remote" \
+      '[inputs] | {name:$name, opt:{continue:true, nonInteractive:true, state:.[0], result:.[1]}}' \
+      | rc_call config/update)" || {
+      echo "iCloud sign-in failed: $(jq -r '.error // "unknown error"' <<<"$reply")" >&2
+      rc_stop; return 1; }
+  done
+  rc_stop; trap - EXIT
+}
+
+# ---------------------------------------------------------------------------
+cmd_connect() {
+  local id="$1" remote backend name
+  remote="$(remote_of "$id")"; backend="$(backend_of "$id")"; name="$(name_of "$id")"
+  cmd_setup
+  if configured "$id"; then
+    echo "$name is already connected."
+  else
+    echo
+    echo "Connecting $name ..."
+    case "$id" in
+      google)
+        echo "A browser window will open for Google sign-in."
+        rclone config create "$remote" drive scope=drive config_is_local=true
+        ;;
+      onedrive)
+        echo "A browser window will open for Microsoft sign-in, then pick your drive."
+        rclone config create "$remote" onedrive
+        ;;
+      icloud)
+        echo "iCloud has no OAuth: rclone signs in with your Apple ID and a 2FA code."
+        echo "Tip: use an app-specific password from https://account.apple.com/account/manage"
+        echo "Advanced Data Protection must be OFF for this account (Apple limitation)."
+        local apple_id pw
+        apple_id="$(gum input --placeholder "Apple ID (email)")"
+        [[ -n $apple_id ]] || fail "no Apple ID given"
+        pw="$(gum input --password --placeholder "Password")"
+        [[ -n $pw ]] || fail "no password given"
+        if ! rc_configure_icloud "$remote" "$apple_id" "$pw"; then
+          unset pw
+          rclone config delete "$remote" 2>/dev/null || true
+          fail "could not sign in to iCloud"
+        fi
+        unset pw
+        ;;
+    esac
+    configured "$id" || fail "$name was not configured"
+  fi
+  echo "Testing the connection..."
+  rclone about "$remote:" 2>/dev/null || rclone lsd --max-depth 1 "$remote:" >/dev/null
+  cmd_mount "$id"
+  echo "$name is mounted at $MOUNT_ROOT/$remote"
+}
+
+cmd_disconnect() {
+  local id="$1" remote name
+  remote="$(remote_of "$id")"; name="$(name_of "$id")"
+  gum confirm "Disconnect $name and forget its credentials on this machine?" || exit 130
+  cmd_unmount "$id"
+  configured "$id" && rclone config delete "$remote"
+  rmdir "$MOUNT_ROOT/$remote" 2>/dev/null || true
+  echo "$name disconnected."
+}
+
+cmd_mount() {
+  local id="$1" unit; unit="$(unit_of "$id")"
+  configured "$id" || fail "$(name_of "$id") is not connected yet"
+  [[ -f $UNIT_DIR/${UNIT_NAME}.service ]] || ensure_unit
+  systemctl --user enable --now "$unit"
+}
+
+cmd_unmount() {
+  local id="$1" unit; unit="$(unit_of "$id")"
+  systemctl --user disable --now "$unit" 2>/dev/null || true
+  is_mounted "$(remote_of "$id")" && fusermount3 -uz "$MOUNT_ROOT/$(remote_of "$id")" || true
+}
+
+window_for() { # window_for <title>
+  hyprctl clients -j | jq -r --arg t "$1" '[.[] | select(.title == $t and .mapped)] | .[0].address // empty'
+}
+
+focus_window() { # focus_window <address>
+  hyprctl dispatch "hl.dsp.focus({ window = \"address:$1\" })" >/dev/null 2>&1 \
+    || hyprctl dispatch focuswindow "address:$1" >/dev/null 2>&1 || true
+}
+
+cmd_open() {
+  local remote dir addr i; remote="$(remote_of "$1")"; dir="$MOUNT_ROOT/$remote"
+  is_mounted "$remote" || cmd_mount "$1"
+  # Reuse an existing file-manager window for this folder; otherwise open one
+  # and focus it once it maps (it may land on another monitor's workspace).
+  addr="$(window_for "$remote")"
+  if [[ -z $addr ]]; then
+    setsid xdg-open "$dir" >/dev/null 2>&1 &
+    for ((i = 0; i < 50; i++)); do
+      addr="$(window_for "$remote")"
+      [[ -n $addr ]] && break
+      read -t 0.1 <> <(:) || true
+    done
+  fi
+  [[ -n $addr ]] && focus_window "$addr"
+  return 0
+}
+
+# Runs the given subcommand interactively in a floating terminal (connect's
+# browser/2FA prompts, disconnect's confirm) -- this project's own
+# foot --app-id pattern (see cyberos-install-gui), not Omarchy's
+# omarchy-launch-floating-terminal-with-presentation. %q-quoted into the
+# bash -c string deliberately: this is the one place a composed shell
+# string is correct, since bash -c is the intermediary being handed to on
+# purpose, not a substitute for argv elsewhere in this script.
+cmd_launch() {
+  local quoted; quoted="$(printf '%q ' "$@")"
+  exec foot --app-id=cyberos-cloud-drives --title="Cloud Drives" -- bash -c \
+    "/usr/local/bin/cyberos-cloud-drives $quoted; echo; read -n1 -srp 'Press any key to close...'"
+}
+
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+  state)      cmd_state ;;
+  setup)      cmd_setup ;;
+  connect)    cmd_connect "${2:?provider}" ;;
+  disconnect) cmd_disconnect "${2:?provider}" ;;
+  mount)      cmd_mount "${2:?provider}" ;;
+  unmount)    cmd_unmount "${2:?provider}" ;;
+  open)       cmd_open "${2:?provider}" ;;
+  launch)     shift; cmd_launch "$@" ;;
+  *) sed -n '3,20p' "$0"; exit 1 ;;
+esac

@@ -10,6 +10,9 @@ setup() {
   export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/cfg"
   mkdir -p "$XDG_CONFIG_HOME/hypr"
   cp "$HYPR/theme.lua" "$XDG_CONFIG_HOME/hypr/theme.lua"
+  # Isolates the touchscreen-restore block's state read from whatever the
+  # real running user happens to have under ~/.local/state/cyberos.
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
 }
 
 run_config() { lua -e "dofile('$STUB'); dofile('$HYPR/hyprland.lua'); report()"; }
@@ -127,4 +130,31 @@ run_config() { lua -e "dofile('$STUB'); dofile('$HYPR/hyprland.lua'); report()";
   run run_config
   [[ "$output" == *"bindcmd SUPER + period :: qs ipc call emoji toggle"* ]]
   ! grep -q 'bindcmd SUPER + period :: rofi' <<<"$output"
+}
+
+@test "Super+Shift+U toggles the touchscreen" {
+  run run_config
+  [[ "$output" == *"bindcmd SUPER + SHIFT + U :: cyberos-toggle-touchscreen"* ]]
+}
+
+@test "no persisted touchscreen-disabled state: hl.device is never called" {
+  run run_config
+  [ "$status" -eq 0 ]
+  ! grep -q '^device ' <<<"$output"
+}
+
+@test "a persisted touchscreen-disabled name is restored as enabled=false on config load" {
+  mkdir -p "$XDG_STATE_HOME/cyberos"
+  printf 'ELAN9008:00 04F3:2A1B Touchscreen\n' > "$XDG_STATE_HOME/cyberos/touchscreen-disabled-name"
+  run run_config
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"device name=ELAN9008:00 04F3:2A1B Touchscreen enabled=false"* ]]
+}
+
+@test "an empty persisted-name file restores nothing (no crash, no bogus hl.device call)" {
+  mkdir -p "$XDG_STATE_HOME/cyberos"
+  : > "$XDG_STATE_HOME/cyberos/touchscreen-disabled-name"
+  run run_config
+  [ "$status" -eq 0 ]
+  ! grep -q '^device ' <<<"$output"
 }

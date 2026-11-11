@@ -67,10 +67,42 @@ FloatingWindow {
 
     // 7z handles zip/7z/tar/gz/xz/rar alike; workingDirectory puts the output
     // beside the archive rather than wherever the shell happens to have been.
+    //
+    // Archives are exactly the kind of file this project's own users handle
+    // routinely -- CTF challenges, malware samples, coursework downloads --
+    // so "extract here" cannot trust an entry's own path. Whether the
+    // installed 7z build refuses a traversal entry on its own varies by
+    // version, so this lists the archive first (-slt: one "Path = " line per
+    // entry, after the "----------" separator that ends the archive's own
+    // header block) and refuses to extract anything containing a ".."
+    // segment or an absolute path, rather than relying on the extractor's
+    // own defaults.
+    Process {
+        id: listProc
+        property string pendingArchive: ""
+        stdout: StdioCollector {
+            onStreamFinished: {
+                const archive = listProc.pendingArchive;
+                listProc.pendingArchive = "";
+                if (!archive) return;
+                const lines = text.split("\n");
+                const sep = lines.findIndex(l => l.startsWith("----------"));
+                const entries = sep >= 0 ? lines.slice(sep + 1) : [];
+                const paths = entries.filter(l => l.startsWith("Path = ")).map(l => l.slice(7));
+                const unsafe = paths.some(p => p.startsWith("/") || p.split("/").includes(".."));
+                if (unsafe) {
+                    console.warn("Files: refused to extract " + archive + " -- an entry's path escapes the target directory");
+                    return;
+                }
+                extractProc.workingDirectory = root.path;
+                extractProc.exec(["7z", "x", "-y", "--", archive]);
+            }
+        }
+    }
     Process { id: extractProc }
     function extract(filePath) {
-        extractProc.workingDirectory = root.path;
-        extractProc.exec(["7z", "x", "-y", filePath]);
+        listProc.pendingArchive = filePath;
+        listProc.exec(["7z", "l", "-slt", "--", filePath]);
     }
 
     FolderListModel {
@@ -229,6 +261,7 @@ FloatingWindow {
                             Text {
                                 Layout.fillWidth: true
                                 text: cell.fileName
+                                textFormat: Text.PlainText
                                 color: Cyber.Theme.fg
                                 font { family: Cyber.Theme.fontFamily; pixelSize: Cyber.Theme.fontSize - 3 }
                                 horizontalAlignment: Text.AlignHCenter

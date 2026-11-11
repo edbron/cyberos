@@ -58,6 +58,27 @@ QS="$ROOT/profile/airootfs/etc/skel/.config/quickshell"
   grep -qE 'visible:.*dnd' "$QS/notify/NotifyPopups.qml"
 }
 
+@test "NotifyPopups eviction: soft limit spares critical, hard ceiling does not" {
+  # Regression guard: an earlier revision exempted critical notifications from
+  # eviction with no hard ceiling behind it, so any local process could flood
+  # the session bus with urgency=critical notifications (a client-chosen hint,
+  # not a privileged flag) and grow trackedNotifications without bound. The
+  # fix adds a hard ceiling that evicts the oldest item regardless of urgency;
+  # this pins both thresholds and both branches so a future "simplification"
+  # can't silently drop the ceiling again.
+  f="$QS/notify/NotifyPopups.qml"
+  grep -qE 'softLimit:\s*20' "$f"
+  grep -qE 'hardLimit:\s*100' "$f"
+  grep -qE 'all\.length > root\.hardLimit' "$f"
+  grep -qE 'all\.length > root\.softLimit' "$f"
+  # Hard-ceiling branch: unconditional eviction, no urgency check on this line.
+  hard_line=$(grep -nE 'all\[0\]\.expire\(\)' "$f")
+  [ -n "$hard_line" ]
+  [[ "$hard_line" != *urgency* ]]
+  # Soft-limit branch: still exempts critical notifications.
+  grep -qE "urgency !== NotificationUrgency\.Critical" "$f"
+}
+
 @test "NotifyCard: urgency styling, expiry timer, dismiss on click" {
   grep -q 'NotificationUrgency' "$QS/notify/NotifyCard.qml"
   grep -q 'Critical' "$QS/notify/NotifyCard.qml"

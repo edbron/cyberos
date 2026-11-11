@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  cyberos-toggle-touchscreen — enable/disable the touchscreen (Super+Shift+U).
+#
+#      cyberos-toggle-touchscreen            toggle (default)
+#      cyberos-toggle-touchscreen on
+#      cyberos-toggle-touchscreen off
+#
+#  Hyprland 0.56's Lua config exposes per-device control as
+#  hl.device({ name = <device name>, enabled = <bool> }), issued at runtime
+#  via `hyprctl eval`. The device name comes from a USB descriptor -- it is
+#  data, not code, and is escaped before it goes into that Lua string (never
+#  string-concatenated as trusted Lua) and rejected outright if it contains
+#  control characters.
+#
+#  State (which device is currently force-disabled, if any) is a marker file
+#  holding the device's own name, not a bare on/off flag: Hyprland has no
+#  query API for "is device X currently enabled", so the marker is this
+#  script's only record, and storing the name means a re-enable can target
+#  the exact device even if `hyprctl devices` reorders on a later run.
+# ============================================================================
+
+# Sourcing this file with CYBEROS_TOUCHSCREEN_LIB_ONLY=1 defines the helpers
+# without running the toggle, so they can be tested without a live Hyprland
+# session or a real touchscreen. `set -u` is kept inside the guard too: it
+# leaks into bats and breaks its internals when the file is sourced.
+if [[ ${BASH_SOURCE[0]} == "${0}" ]]; then
+  set -euo pipefail
+fi
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cyberos"
+STATE_FILE="$STATE_DIR/touchscreen-disabled-name"
+
+notify() {   # $1 = message
+  notify-send -i input-touchscreen "CyberOS" "$1" >/dev/null 2>&1 || true
+}
+
+# First touch device Hyprland currently sees. Empty output (not an error)
+# means "no touchscreen" -- a laptop with none is the common case, not a
+# fault.
+find_touch_device() {
+  hyprctl devices -j 2>/dev/null | jq -r '.touch[0].name // empty'
+}
+
+# Backslash first, then double-quote -- reversing the order would
+# double-escape a quote's own escaping backslash.
+escape_lua_string() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '%s' "$s"
+}
+
+has_control_chars() {
+  [[ $1 == *[[:cntrl:]]* ]]
+}
+
+# $1 = device name (already validated), $2 = true|false
+apply_device() {
+  local escaped
+  escaped=$(escape_lua_string "$1")
+  hyprctl eval "hl.device({ name = \"$escaped\", enabled = $2 })" >/dev/null
+}
+
+enable_touchscreen() {
+  local name
+  name=$(find_touch_device)
+  if [[ -z $name ]]; then
+    notify "No touchscreen found"
+    return 1
+  fi
+  if has_control_chars "$name"; then
+    notify "Touchscreen device name is invalid"
+    return 1
+  fi
+  apply_device "$name" true
+  rm -f "$STATE_FILE"
+  notify "Touchscreen enabled"
+}
+
+disable_touchscreen() {
+  local name
+  name=$(find_touch_device)
+  if [[ -z $name ]]; then
+    notify "No touchscreen found"
+    return 1
+  fi
+  if has_control_chars "$name"; then
+    notify "Touchscreen device name is invalid"
+    return 1
+  fi
+  apply_device "$name" false
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$name" > "$STATE_FILE"
+  notify "Touchscreen disabled"
+}
+
+# Everything below this point talks to a live Hyprland session. Stop here
+# when sourced for tests.
+if [[ -n ${CYBEROS_TOUCHSCREEN_LIB_ONLY:-} ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+case "${1:-toggle}" in
+  on)     enable_touchscreen;;
+  off)    disable_touchscreen;;
+  toggle) if [[ -f $STATE_FILE ]]; then enable_touchscreen; else disable_touchscreen; fi;;
+  *) echo "usage: cyberos-toggle-touchscreen [on|off|toggle]" >&2; exit 1;;
+esac

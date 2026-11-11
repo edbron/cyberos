@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Services.Notifications
 import ".." as Cyber
 
 // Replaces mako's own popup rendering. Instantiated once from shell.qml via
@@ -35,6 +36,34 @@ PanelWindow {
     aboveWindows: true
 
     readonly property var tracked: root.server ? root.server.trackedNotifications.values : []
+
+    readonly property int softLimit: 20
+    readonly property int hardLimit: 100
+
+    // Notification Server Capacity & Defensive Hard Ceiling Policy:
+    // 1. Soft Limit (20): Normal capacity target. Evicts oldest non-critical notification.
+    // 2. Hard Ceiling (100): Resource-safety boundary against pathological floods.
+    //    Evicts oldest notification regardless of urgency to prevent memory exhaustion.
+    //
+    // Signal Re-Entrancy Safety:
+    // Calling expire() mutates trackedNotifications and synchronously re-emits valuesChanged.
+    // Evicting at most ONE item per invocation ensures each signal pass is safe and self-contained;
+    // subsequent evictions (if still over limit) are naturally driven by the re-emitted signal.
+    Connections {
+        target: root.server ? root.server.trackedNotifications : null
+        function onValuesChanged() {
+            if (!root.server) return;
+            const all = root.server.trackedNotifications.values;
+            if (all.length > root.hardLimit) {
+                // Hard ceiling exceeded: forcibly evict oldest item (even if critical) for resource safety
+                if (all.length > 0) all[0].expire();
+            } else if (all.length > root.softLimit) {
+                // Soft limit exceeded: evict oldest non-critical item (preserve critical notifications)
+                const candidate = all.find(n => n.urgency !== NotificationUrgency.Critical);
+                if (candidate) candidate.expire();
+            }
+        }
+    }
 
     // Hidden entirely -- not just empty -- whenever there is nothing to
     // show or DND is on, so no layer surface is mapped at all in either

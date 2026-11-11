@@ -22,7 +22,7 @@ PanelWindow {
             spacing: 8
             BarModule { icon: "\uf00a"; tooltip: "Applications"; onClicked: launcher.activeAsync = true }
             InstallButton {}
-            Media {}
+            MusicFlowChip {}
         }
 
         Workspaces {                      // center
@@ -38,6 +38,9 @@ PanelWindow {
             Audio {}
             Network {}
             Battery {}
+            MonitorChip {}
+            CloudDrivesChip {}
+            SystemHealthChip {}
             NotifyChip {}
             BarModule { icon: "\uf011"; onClicked: powerMenu.activeAsync = true }
         }
