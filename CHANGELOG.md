@@ -10,6 +10,14 @@ own build metadata — not SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- `fim` (a keyboard-driven TUI file manager) and `filetransferd`/`ftctl`
+  (a systemd `--user` transfer daemon, enabled by default) replace the QML
+  Files app as CyberOS's default, and only, file manager and copy/move
+  mechanism. `fim` opens in a floating `foot` window (Super+E); a new bar
+  chip shows live transfer status.
+
 ### Security
 
 - Fixed a shell injection in `cyberos-install`'s chroot handoff: an unquoted
@@ -78,6 +86,14 @@ own build metadata — not SemVer.
 
 ### Added
 
+- README: a real Secure Boot key-enrolment walkthrough (`sbctl create-keys`,
+  `enroll-keys`, signing GRUB and both kernels, re-signing after kernel
+  updates), replacing the previous one-line "disable it or enrol keys"
+  note. Documents the known gap plainly: this install is GRUB with a split
+  kernel + initrd, not a Unified Kernel Image, so GRUB verifies its own
+  signature and the kernel's but not the initrd's (closing that needs
+  UAPI.5's UKI requirement, which nothing here implements yet). `docs/SPEC.md`
+  S5 moves from Partial to Done.
 - Cloud Drives: a bar chip + popup to connect Google Drive, OneDrive, and
   iCloud Drive as folders under `~/Cloud`, on by default. UX ported from
   github.com/edbron/omarchy-cloud-drives; its QML is not, for the same

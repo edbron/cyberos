@@ -1,0 +1,8 @@
+#!/bin/sh
+# Opens fim in a floating foot window. Title is set to the target
+# directory's basename so cyberos-cloud-drives' window_for() (which matches
+# on title == remote name) keeps finding and reusing this window -- see
+# cyberos-cloud-drives' cmd_open().
+dir="${1:-$HOME}"
+title="$(basename "$dir")"
+exec foot --app-id=cyberos-fim --title="$title" -- fim "$dir"

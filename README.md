@@ -193,7 +193,37 @@ blue/magenta/cyan follow the macOS system colours.
 * SSH is installed but **not enabled**. The live image ships root and student
   with empty passwords, so `20-cyberos-hardening.conf` sets `PermitRootLogin no`
   and `PermitEmptyPasswords no`; installed systems inherit it.
-* Secure Boot is not supported by archiso out of the box — disable it in firmware or enrol keys.
+* **Secure Boot** ships in Tier 2 (best-effort, `docs/SPEC.md` §2.2): CyberOS has no
+  Microsoft-signed shim, so a stock "Secure Boot: On" firmware with the default
+  Microsoft certificate chain will refuse to boot GRUB. To enrol your own keys
+  on the installed system instead:
+
+  1. In firmware setup, put Secure Boot into **Setup Mode** (or clear the
+     existing platform key) — the exact menu wording varies by vendor.
+  2. Boot the installed system and run:
+
+     ```bash
+     sudo sbctl create-keys                       # generates PK/KEK/db under /usr/share/secureboot
+     sudo sbctl enroll-keys --microsoft            # --microsoft also keeps Microsoft's 3rd-party
+                                                    # cert, which some GPU/NIC option ROMs still need
+     sudo sbctl sign -s /boot/efi/EFI/CyberOS/grubx64.efi
+     sudo sbctl sign -s /boot/vmlinuz-linux
+     sudo sbctl sign -s /boot/vmlinuz-linux-lts    # both kernels — §2.4 requires both to boot
+     sudo sbctl verify                             # confirms every tracked file's signature is valid
+     ```
+  3. Re-enable Secure Boot enforcement in firmware and reboot.
+
+  **Known gap:** this install uses GRUB with a split kernel + initrd
+  (`mkinitcpio`), not a Unified Kernel Image, and GRUB does not verify the
+  initrd it loads — only its own signature and the kernel's. A local attacker
+  with disk access could still swap the initrd. Closing that needs UKIs
+  (`docs/SPEC.md` UAPI.5), which nothing here implements yet, so treat this as
+  boot-chain integrity, not full initrd integrity.
+
+  **After every kernel update**, re-sign or the new kernel image won't boot
+  under enforcement: `sudo sbctl sign-all` re-signs everything `sbctl` is
+  already tracking (from the `-s` flags above). `pacman -Syu` does not do
+  this for you.
 
 ## Contributing
 

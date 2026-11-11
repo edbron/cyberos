@@ -98,7 +98,13 @@ EOF
   source <(sed -n '/^ensure_rclone()/,/^}/p' "$SCRIPT")
   source <(sed -n '/^fail()/,/^}/p' "$SCRIPT")
   source <(sed -n '/^have_rclone()/,/^}/p' "$SCRIPT")
-  run ensure_rclone
+  # Isolate PATH to just the (now rclone-less) stub dir: setup()'s
+  # "$BATS_TEST_TMPDIR/bin:$PATH" leaves the real system PATH appended, so
+  # on a dev machine that actually has rclone/fusermount3 installed,
+  # `command -v` would find those real binaries and this test would pass
+  # for the wrong reason (or fail to catch a regression) depending on the
+  # host. have_rclone/ensure_rclone need nothing else from PATH.
+  PATH="$BATS_TEST_TMPDIR/bin" run ensure_rclone
   [ "$status" -ne 0 ]
   [[ "$output" == *"rclone/fuse3 not found"* ]]
   ! grep -v '^#' "$SCRIPT" | grep -q "omarchy-pkg-add"

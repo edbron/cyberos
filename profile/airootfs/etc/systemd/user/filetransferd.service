@@ -1,0 +1,26 @@
+[Unit]
+Description=File transfer queue daemon (independent of any file manager)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/filetransferd
+Restart=on-failure
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+# Lets an SSH_ASKPASS helper pop up a GUI prompt for remote-transfer auth
+# (password / host-key confirmation) since this service has no terminal.
+# Populated via `systemctl --user import-environment`, run by install.sh.
+PassEnvironment=DISPLAY WAYLAND_DISPLAY SSH_ASKPASS
+NoNewPrivileges=true
+# No PrivateTmp: it puts the service in its own mount namespace, which
+# remaps root-owned files' apparent UID under systemd's user-namespace
+# sandboxing. OpenSSH's strict permission check on
+# /etc/ssh/ssh_config.d/*.conf then sees a "wrong" owner and refuses to
+# even parse ssh_config, breaking every remote transfer before it reaches
+# the network. The daemon doesn't use /tmp anyway (queue state lives
+# under XDG_STATE_HOME, the socket under XDG_RUNTIME_DIR), so there's
+# nothing this bought that isolation elsewhere here doesn't already cover.
+
+[Install]
+WantedBy=default.target

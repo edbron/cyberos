@@ -6,12 +6,13 @@ QS="$ROOT/profile/airootfs/etc/skel/.config/quickshell"
 
 setup() {
   export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/cfg"
-  mkdir -p "$XDG_CONFIG_HOME"
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
+  mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 }
 
 @test "cyberos-theme writes valid theme.json for both modes" {
   for mode in light dark; do
-    env -u HYPRLAND_INSTANCE_SIGNATURE XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    env -u HYPRLAND_INSTANCE_SIGNATURE XDG_CONFIG_HOME="$XDG_CONFIG_HOME" XDG_STATE_HOME="$XDG_STATE_HOME" \
       bash "$ROOT/profile/airootfs/usr/local/bin/cyberos-theme" "$mode" >/dev/null
     python3 - "$XDG_CONFIG_HOME/quickshell/theme.json" "$mode" <<'PY'
 import json, sys
@@ -27,7 +28,7 @@ PY
 
 @test "light and dark produce different backgrounds, same accent" {
   for mode in light dark; do
-    env -u HYPRLAND_INSTANCE_SIGNATURE XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    env -u HYPRLAND_INSTANCE_SIGNATURE XDG_CONFIG_HOME="$XDG_CONFIG_HOME" XDG_STATE_HOME="$XDG_STATE_HOME" \
       bash "$ROOT/profile/airootfs/usr/local/bin/cyberos-theme" "$mode" >/dev/null
     cp "$XDG_CONFIG_HOME/quickshell/theme.json" "$BATS_TEST_TMPDIR/$mode.json"
   done
@@ -44,6 +45,28 @@ PY
 import json, sys
 t = json.load(open(sys.argv[1]))
 assert t["mode"] == "dark" and t["bg"] == "#1D1D1F" and t["accent"] == "#00CA4E"
+PY
+}
+
+@test "cyberos-theme also writes an Omarchy-format colors.toml for fim" {
+  # fim's live-theme auto-detection (tui-file-manager's theme/mod.rs) looks
+  # for $XDG_STATE_HOME/omarchy/current/theme/colors.toml before falling
+  # back to its own built-in palette; cyberos-theme must keep writing it so
+  # fim follows the active CyberOS theme instead of always falling back.
+  env -u HYPRLAND_INSTANCE_SIGNATURE XDG_CONFIG_HOME="$XDG_CONFIG_HOME" XDG_STATE_HOME="$XDG_STATE_HOME" \
+    bash "$ROOT/profile/airootfs/usr/local/bin/cyberos-theme" dark >/dev/null
+  f="$XDG_STATE_HOME/omarchy/current/theme/colors.toml"
+  [ -f "$f" ]
+  python3 - "$f" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    t = tomllib.load(fh)
+for k in ("foreground", "dark_foreground", "bright_foreground", "background",
+          "dark_background", "darker_background", "lighter_background",
+          "selection", "accent", "muted", "red", "green", "yellow", "cyan",
+          "blue", "magenta"):
+    v = t[k]
+    assert v.startswith("#") and len(v) == 7, (k, v)
 PY
 }
 

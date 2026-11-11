@@ -40,6 +40,7 @@ PanelWindow {
             Battery {}
             MonitorChip {}
             CloudDrivesChip {}
+            TransferChip {}
             SystemHealthChip {}
             NotifyChip {}
             BarModule { icon: "\uf011"; onClicked: powerMenu.activeAsync = true }

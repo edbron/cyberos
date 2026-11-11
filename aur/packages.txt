@@ -9,3 +9,4 @@ onlyoffice-bin
 # generate a palette from their own wallpaper, independent of cyberos-theme's
 # own light/dark toggle. Standalone, no Omarchy dependency.
 aether
+fim

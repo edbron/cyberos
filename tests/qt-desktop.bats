@@ -15,7 +15,7 @@ AIROOTFS="$BATS_TEST_DIRNAME/../profile/airootfs"
 
 @test "mimeapps.list routes to the QML surfaces and the two kept apps" {
   f="$AIROOTFS/etc/skel/.config/mimeapps.list"
-  grep -qx 'inode/directory=cyberos-files.desktop' "$f"
+  grep -qx 'inode/directory=cyberos-fim.desktop' "$f"
   grep -qx 'image/png=cyberos-images.desktop' "$f"
   grep -qx 'application/pdf=firefox.desktop' "$f"
   grep -qx 'text/plain=code.desktop' "$f"

@@ -105,7 +105,7 @@ run_config() { lua -e "dofile('$STUB'); dofile('$HYPR/hyprland.lua'); report()";
 
 @test "app binds target the Qt apps; installer launches without gtk-launch" {
   run run_config
-  [[ "$output" == *"bindcmd SUPER + E :: cyberos-files"* ]]
+  [[ "$output" == *"bindcmd SUPER + E :: cyberos-fim"* ]]
   [[ "$output" == *'bindcmd SUPER + I :: foot --app-id=cyberos-installer --title="Install CyberOS" sudo /usr/local/bin/cyberos-install'* ]]
   [[ "$output" != *"gtk-launch"* ]]
 }

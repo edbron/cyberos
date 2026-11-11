@@ -43,8 +43,8 @@ pcall(dofile, cfgdir .. "/monitors.lua")
 ---------------------------------------------------------------- programs
 local terminal = "foot"
 local browser  = "firefox"
--- dolphin is gone; Files is a Quickshell surface in the running shell.
-local files    = "cyberos-files" -- wrapper: always passes an explicit arg, empty here
+-- dolphin is gone; Files is fim, a TUI opened in a floating foot window.
+local files    = "cyberos-fim" -- wrapper: always passes an explicit arg, defaults to $HOME
 local editor   = "code"
 
 ---------------------------------------------------------------- autostart

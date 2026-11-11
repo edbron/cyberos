@@ -40,3 +40,30 @@ pkg_listed() {
     pkg_listed "$p"
   done
 }
+
+@test "fim is listed as a package" {
+  pkg_listed "fim"
+}
+
+@test "fim has a local PKGBUILD" {
+  [ -f "$BATS_TEST_DIRNAME/../aur/fim/PKGBUILD" ]
+}
+
+@test "fim is registered for local build" {
+  grep -qx "fim" "$BATS_TEST_DIRNAME/../aur/packages.txt"
+}
+
+@test "filetransferd is enabled as a default user unit" {
+  [ -L "$BATS_TEST_DIRNAME/../profile/airootfs/etc/systemd/user/default.target.wants/filetransferd.service" ]
+}
+
+@test "ftctl and filetransferd binaries are vendored" {
+  [ -x "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/filetransferd" ]
+  [ -x "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/ftctl" ]
+}
+
+@test "ft_common is vendored -- ftctl/filetransferd both import it" {
+  [ -f "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/ft_common.py" ]
+  grep -q "import ft_common" "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/ftctl"
+  grep -q "import ft_common" "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/filetransferd"
+}

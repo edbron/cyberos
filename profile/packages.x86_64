@@ -120,7 +120,7 @@ xdg-desktop-portal-hyprland
 # Replaces xdg-desktop-portal-gtk; /etc/xdg-desktop-portal/hyprland-portals.conf
 # routes FileChooser here.
 xdg-desktop-portal-kde
-# removable-drive mounting for the QML file manager
+# removable-drive mounting for fim's DEVICES sidebar
 udisks2
 xdg-user-dirs
 quickshell
@@ -174,16 +174,25 @@ lazygit
 # ---- apps ----
 firefox
 # Firefox is also the PDF viewer (pdf.js) -- okular is gone with the rest of
-# the KDE apps. Files/Images/Mixer are Quickshell QML surfaces now, so the
-# only GUI apps on the ISO are the two that no QML surface can replace.
+# the KDE apps. Images/Mixer are Quickshell QML surfaces; Files is fim (a
+# TUI, opened in a floating foot window, see the file manager / transfer
+# section below), so the only GUI apps on the ISO are the two that no QML
+# surface or TUI can replace.
 mpv
-# xdg-open: how the QML file manager hands a file to its registered handler.
+# xdg-open: how fim hands a file to its registered handler.
 # Shell scripts, no toolkit dependency. Nothing else on the ISO provides it
 # (dolphin used KIO internally).
 xdg-utils
 # trash-put: the freedesktop trash spec. `gio trash` left with gvfs, and the
 # file manager must never rm a student's work.
 trash-cli
+
+# ---- file manager / transfer ----
+# fim: the default (and only) file manager, TUI, opened in a floating foot
+# window (cyberos-fim). rsync backs filetransferd's copy/move queue, which
+# fim delegates all copy/move/paste to via ftctl -- see tests/quickshell.bats.
+fim
+rsync
 
 # ---- cloud drives ----
 # Connect iCloud/Google Drive/OneDrive as folders under ~/Cloud (bar chip +

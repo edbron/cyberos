@@ -86,10 +86,6 @@ ShellRoot {
         id: images
         Apps.Images {}
     }
-    LazyLoader {
-        id: files
-        Apps.Files {}
-    }
     LazyLoader { id: osd; Osd.Osd {} }
 
     // Replaces mako. actionsSupported/imageSupported/bodySupported tell the
@@ -163,6 +159,15 @@ ShellRoot {
         id: cloudDrives
         active: true
         Popups.CloudDrives {}
+    }
+
+    // Always active for the same reason as cloudDrives above:
+    // bar/TransferChip.qml needs live active-count/error state to colour
+    // itself even while the panel is closed.
+    LazyLoader {
+        id: transfer
+        active: true
+        Popups.Transfer {}
     }
 
     // `qs ipc call notify dnd` -- replaces mako's own notification pipeline;
@@ -272,21 +277,9 @@ ShellRoot {
         }
     }
 
-    // `qs ipc call files open <path>` -- Super+E and cyberos-files.desktop
-    // both land here. An empty path means "open at $HOME", which is the
-    // component's own default, so it is left alone in that case.
-    // `active`, not `activeAsync` -- see the images handler above: the item
-    // must exist by the time we assign to it.
-    IpcHandler {
-        target: "files"
-        function open(path: string): void {
-            files.active = true;
-            if (files.item) {
-                if (path !== "") files.item.path = path;
-                files.item.visible = true;
-            }
-        }
-    }
+    // Files is fim now (a TUI, opened by cyberos-fim in a floating foot
+    // window via Super+E / cyberos-fim.desktop), not a Quickshell surface,
+    // so there is no IPC target for it here.
 
     // `qs ipc call systemhealth toggle` -- bar/SystemHealthChip.qml's own
     // click handler. `systemhealth` is always `active` (see the LazyLoader
@@ -325,6 +318,15 @@ ShellRoot {
         function open(): void { cloudDrives.item?.open(); }
         function close(): void { cloudDrives.item?.close(); }
         function toggle(): void { cloudDrives.item?.toggle(); }
+    }
+
+    // `qs ipc call transfer toggle` -- bar/TransferChip.qml's own click
+    // handler, same shape as clouddrives above.
+    IpcHandler {
+        target: "transfer"
+        function open(): void { transfer.item?.open(); }
+        function close(): void { transfer.item?.close(); }
+        function toggle(): void { transfer.item?.toggle(); }
     }
 
     // Keeps Pipewire's default-sink properties valid/subscribed for the OSD

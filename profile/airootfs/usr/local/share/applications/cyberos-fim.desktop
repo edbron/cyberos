@@ -2,7 +2,7 @@
 Type=Application
 Name=Files
 Comment=Browse your files
-Exec=cyberos-files %f
+Exec=cyberos-fim %f
 Icon=system-file-manager
 Terminal=false
 Categories=System;FileManager;

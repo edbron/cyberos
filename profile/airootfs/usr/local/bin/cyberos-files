@@ -1,6 +1,0 @@
-#!/bin/sh
-# The launcher strips %f when no file is given, and `qs ipc call files open`
-# with no argument never reaches the handler (it warns and exits 0 -- a silent
-# no-op). Always pass an argument, empty when there is no path: the handler
-# treats "" as "open at $HOME".
-exec qs ipc call files open "${1:-}"

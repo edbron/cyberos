@@ -79,62 +79,43 @@ QS="$ROOT/profile/airootfs/etc/skel/.config/quickshell"
   grep -q 'MimeType=image/' "$d"
 }
 
-@test "files: FloatingWindow over FolderListModel with the verified roles" {
-  f="$QS/apps/Files.qml"
+@test "files: Files.qml is gone, replaced by fim" {
+  [ ! -f "$QS/apps/Files.qml" ]
+  run grep -r 'target: "files"' "$QS/shell.qml"
+  [ "$status" -ne 0 ]
+}
+
+@test "files: cyberos-fim wrapper opens fim in a floating foot window" {
+  f="$ROOT/profile/airootfs/usr/local/bin/cyberos-fim"
   [ -f "$f" ]
-  grep -q 'FloatingWindow' "$f"
-  grep -q 'Qt.labs.folderlistmodel' "$f"
-  grep -q 'showDirsFirst' "$f"
-  run grep 'fileURL' "$f"
-  [ "$status" -ne 0 ]
+  grep -q 'foot' "$f"
+  grep -q 'fim' "$f"
+  grep -q -- '--title' "$f"
 }
 
-@test "files: opens via xdg-open, deletes via trash-put, never rm" {
-  f="$QS/apps/Files.qml"
-  grep -q '"xdg-open"' "$f"
-  grep -q '"trash-put"' "$f"
-  grep -q '"7z", "x"' "$f"
-  # A file manager that shells out to rm is a data-loss bug, not a feature.
-  run grep -E '"rm"|rm -' "$f"
-  [ "$status" -ne 0 ]
-}
-
-@test "files: extract lists the archive first and refuses a zip-slip entry before ever calling 7z x" {
-  f="$QS/apps/Files.qml"
-  # 7z l runs before 7z x, driven from the list process's own completion --
-  # the extract call sits inside listProc's stdout handler, not called
-  # directly from extract().
-  grep -q '"7z", "l", "-slt"' "$f"
-  run grep -F 'function extract(filePath)' "$f"
-  [ "$status" -eq 0 ]
-  ! grep -q 'function extract(filePath) { extractProc' "$f"
-  # Entries are parsed only after the archive's own header block ends --
-  # otherwise the archive's own (always-absolute) external path would be
-  # mistaken for an unsafe internal entry on every single extraction.
-  grep -q '"----------"' "$f"
-  grep -q 'p.startsWith("/")' "$f"
-  grep -q 'p.split("/").includes("..")' "$f"
-}
-
-@test "files: ipc target, desktop entry, and Super+E open it" {
-  grep -q 'target: "files"' "$QS/shell.qml"
-  d="$ROOT/profile/airootfs/usr/local/share/applications/cyberos-files.desktop"
+@test "files: desktop entry and Super+E open cyberos-fim" {
+  d="$ROOT/profile/airootfs/usr/local/share/applications/cyberos-fim.desktop"
   [ -f "$d" ]
-  grep -q 'Exec=cyberos-files %f' "$d"
+  grep -q 'Exec=cyberos-fim %f' "$d"
   grep -q 'MimeType=inode/directory' "$d"
 }
 
-@test "launcher wrappers pass an explicit argument and are mode-registered" {
-  for w in cyberos-files cyberos-images; do
-    f="$ROOT/profile/airootfs/usr/local/bin/$w"
-    [ -f "$f" ]
-    # The empty-default is the whole point: qs ipc call with too few
-    # arguments silently does nothing.
-    grep -q '"${1:-}"' "$f"
-    # mkarchiso copies airootfs with --no-preserve=mode, so the execute bit
-    # only exists if profiledef.sh declares it.
-    grep -q "\"/usr/local/bin/$w\"\]=\"0:0:755\"" "$ROOT/profile/profiledef.sh"
-  done
+@test "cyberos-images wrapper passes an explicit argument and is mode-registered" {
+  f="$ROOT/profile/airootfs/usr/local/bin/cyberos-images"
+  [ -f "$f" ]
+  # The empty-default is the whole point: qs ipc call with too few
+  # arguments silently does nothing.
+  grep -q '"${1:-}"' "$f"
+  # mkarchiso copies airootfs with --no-preserve=mode, so the execute bit
+  # only exists if profiledef.sh declares it.
+  grep -q "\"/usr/local/bin/cyberos-images\"\]=\"0:0:755\"" "$ROOT/profile/profiledef.sh"
+}
+
+@test "cyberos-fim wrapper defaults to \$HOME and is mode-registered" {
+  f="$ROOT/profile/airootfs/usr/local/bin/cyberos-fim"
+  [ -f "$f" ]
+  grep -q '\${1:-\$HOME}' "$f"
+  grep -q "\"/usr/local/bin/cyberos-fim\"\]=\"0:0:755\"" "$ROOT/profile/profiledef.sh"
 }
 
 # General form of the check above, driven by git's own tracked mode rather

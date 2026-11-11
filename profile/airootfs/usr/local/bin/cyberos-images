@@ -1,4 +1,4 @@
 #!/bin/sh
-# See cyberos-files: the launcher strips %f when no file is given, and a
-# `qs ipc call` with too few arguments silently does nothing.
+# The launcher strips %f when no file is given, and a `qs ipc call` with
+# too few arguments silently does nothing.
 exec qs ipc call images open "${1:-}"
