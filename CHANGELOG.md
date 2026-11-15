@@ -26,6 +26,9 @@ own build metadata — not SemVer.
   `Nice=10` with best-effort I/O priority so big copies do not freeze the
   desktop. The transfer popup labels these jobs "Compressing" and
   "Extracting".
+- `cyberos-theme` writes fim's `colors.toml` through a temp file and a
+  rename, so fim never reads it half-written. `ftctl` starts the daemon
+  with `/usr/bin/systemctl` instead of a `$PATH` lookup.
 
 ### Security
 
