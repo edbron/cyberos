@@ -18,6 +18,15 @@ own build metadata — not SemVer.
   mechanism. `fim` opens in a floating `foot` window (Super+E); a new bar
   chip shows live transfer status.
 
+### Changed
+
+- `fim` bumped to 0.5.0 (compress/extract, archive progress, trash browser,
+  off-thread blocking work). The vendored `filetransferd`/`ftctl` gain
+  `compress` and `extract` jobs (new `archive.py`), and the daemon runs at
+  `Nice=10` with best-effort I/O priority so big copies do not freeze the
+  desktop. The transfer popup labels these jobs "Compressing" and
+  "Extracting".
+
 ### Security
 
 - Fixed a shell injection in `cyberos-install`'s chroot handoff: an unquoted
