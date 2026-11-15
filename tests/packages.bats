@@ -62,6 +62,16 @@ pkg_listed() {
   [ -x "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/ftctl" ]
 }
 
+@test "archive.py is vendored and registered -- filetransferd imports it" {
+  [ -f "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/archive.py" ]
+  grep -q '"/usr/local/bin/archive.py"' "$BATS_TEST_DIRNAME/../profile/profiledef.sh"
+}
+
+@test "fim PKGBUILD pins the v0.5.0 release tarball checksum" {
+  grep -q '^pkgver=0.5.0$' "$BATS_TEST_DIRNAME/../aur/fim/PKGBUILD"
+  grep -q '6cf532d4b681cf62859bddb37810fedf9cc78030c07170131f331ea147ef5813' "$BATS_TEST_DIRNAME/../aur/fim/PKGBUILD"
+}
+
 @test "ft_common is vendored -- ftctl/filetransferd both import it" {
   [ -f "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/ft_common.py" ]
   grep -q "import ft_common" "$BATS_TEST_DIRNAME/../profile/airootfs/usr/local/bin/ftctl"

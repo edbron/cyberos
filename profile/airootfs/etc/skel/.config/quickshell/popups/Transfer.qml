@@ -59,7 +59,10 @@ PanelWindow {
     function statusLabel(job) {
         switch (job.state) {
             case "queued": return "Queued";
-            case "running": return "Transferring";
+            case "running":
+                if (job.mode === "compress") return "Compressing";
+                if (job.mode === "extract") return "Extracting";
+                return "Transferring";
             case "paused": return "Paused";
             case "done": return "Done";
             case "error": return "Failed";

@@ -48,6 +48,19 @@ assert t["mode"] == "dark" and t["bg"] == "#1D1D1F" and t["accent"] == "#00CA4E"
 PY
 }
 
+@test "colors.toml is written atomically and leaves no temp file" {
+  env -u HYPRLAND_INSTANCE_SIGNATURE XDG_CONFIG_HOME="$XDG_CONFIG_HOME" XDG_STATE_HOME="$XDG_STATE_HOME" \
+    bash "$ROOT/profile/airootfs/usr/local/bin/cyberos-theme" dark >/dev/null
+  [ -f "$XDG_STATE_HOME/omarchy/current/theme/colors.toml" ]
+  [ ! -e "$XDG_STATE_HOME/omarchy/current/theme/colors.toml.tmp" ]
+  grep -q 'mv -f "\$FIM_COLORS.tmp" "\$FIM_COLORS"' "$ROOT/profile/airootfs/usr/local/bin/cyberos-theme"
+}
+
+@test "ftctl starts the daemon via an absolute systemctl path" {
+  grep -q '"/usr/bin/systemctl"' "$ROOT/profile/airootfs/usr/local/bin/ftctl"
+  ! grep -q '\["systemctl"' "$ROOT/profile/airootfs/usr/local/bin/ftctl"
+}
+
 @test "cyberos-theme also writes an Omarchy-format colors.toml for fim" {
   # fim's live-theme auto-detection (tui-file-manager's theme/mod.rs) looks
   # for $XDG_STATE_HOME/omarchy/current/theme/colors.toml before falling
